@@ -6,7 +6,7 @@ readonly HEIC2JPG_VERSION="1.0"
 # Copyright (C) 2026 Luis Gómez Gutiérrez
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-function h2j_usage() {
+function h2j_show_help() {
 	echo "heic2jpg v$HEIC2JPG_VERSION. A quick way to convert HEIC images to JPG."
 	echo
 	echo "Usage: heic2jpg [options] <source>"
@@ -20,26 +20,26 @@ function h2j_usage() {
 }
 
 function get_abs_path() {
-	local h2j_path="${1:-.}"
+	local user_path="${1:-.}"
 	
-	if [[ -d "$h2j_path" ]]; then
-		(cd "$h2j_path" && pwd)
-	elif [[ -f "$h2j_path" ]]; then
-		echo "$(cd "$(dirname "$h2j_path")" && pwd)/$(basename "$h2j_path")"
+	if [[ -d "$user_path" ]]; then
+		(cd "$user_path" && pwd)
+	elif [[ -f "$user_path" ]]; then
+		echo "$(cd "$(dirname "$user_path")" && pwd)/$(basename "$user_path")"
 	else
-		local h2j_dir
-		h2j_dir=$(dirname "$h2j_path")
-		if [[ -d "$h2j_dir" ]]; then
-			echo "$(cd "$h2j_dir" && pwd)/$(basename "$h2j_path")"
+		local dir
+		dir=$(dirname "$user_path")
+		if [[ -d "$dir" ]]; then
+			echo "$(cd "$dir" && pwd)/$(basename "$user_path")"
 		else
-			echo "$h2j_path"
+			echo "$user_path"
 		fi
 	fi
 }
 
 # Long-format flags
 [[ "$1" == "--version" ]] && { echo "$HEIC2JPG_VERSION"; exit 0; }
-[[ "$1" == "--help" ]] && h2j_usage
+[[ "$1" == "--help" ]] && h2j_show_help
 
 # Short-format flags
 h2j_quality=30
@@ -47,7 +47,7 @@ h2j_verbose=false
 
 while getopts "hvq:" h2j_option; do
 	case $h2j_option in
-		h) h2j_usage ;;
+		h) h2j_show_help ;;
 		v) h2j_verbose=true ;;
 		q)
 			# Validate that the input is a number
@@ -58,7 +58,7 @@ while getopts "hvq:" h2j_option; do
 				exit 1
 			fi
 			;;
-		*) h2j_usage ;;
+		*) h2j_show_help ;;
 	esac
 done
 shift "$((OPTIND-1))"
