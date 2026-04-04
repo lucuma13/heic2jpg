@@ -35,7 +35,7 @@ brew install heic2jpg
 
 | Option | Argument | Description |
 | :---: | :--- | :--- |
-| `-q` | \`[1-100]\` | Compression quality (default: 30) |
+| `-q` | `[1-100]` | Compression quality (default: 30) |
 | `-v` | | Verbose |
 | `-h` | | Show help message |
 | `--version` | | Print version |
