@@ -40,4 +40,4 @@ brew install heic2jpg
 | `-h` | | Show help message |
 | `--version` | | Print version |
 
-The `<path>` can be a single file or an entire directory. If a directory is provided, all HEIC files within it will be batch-converted.
+The `<path>` can be a file, a directory, or left blank to process the current folder. All HEIC files in the target location will be batch-converted.
