@@ -13,8 +13,8 @@ A quick way to convert HEIC images to JPG.
 
 #### 🛠 Dependencies
 
-* [ImageMagick](https://github.com/ImageMagick/ImageMagick) v7 or higher.
-* [libheif](https://github.com/strukturag/libheif) (required for HEIC support in ImageMagick)
+* [ImageMagick](https://github.com/ImageMagick/ImageMagick) (v7+) © 1999-2026, ImageMagick Studio LLC (Apache 2.0)
+* [libheif](https://github.com/strukturag/libheif) (for HEIC/HEIF support in ImageMagick) © 2017-2026, Julea, GmbH (GPL-3.0)
 
 #### 🚀 Installation
 
