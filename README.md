@@ -31,7 +31,7 @@ brew install heic2jpg
 
 #### 📖 Usage
 
-`heic2jpg [options] <source>`
+`heic2jpg [options] <path>`
 
 | Option | Argument | Description |
 | :---: | :---: | :--- |
@@ -40,4 +40,4 @@ brew install heic2jpg
 | `-h` | | Show help message |
 | `--version` | | Print version |
 
-The `<source>` can be a single file or an entire directory. If a directory is provided, all HEIC files within it will be batch-converted.
+The `<path>` can be a single file or an entire directory. If a directory is provided, all HEIC files within it will be batch-converted.
