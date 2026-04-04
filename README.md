@@ -37,7 +37,7 @@ brew install heic2jpg
 | :---: | :--- | :--- |
 | `-q` | \`[1-100]\` | Compression quality (default: 30) |
 | `-v` | | Verbose |
-| `-h` | | Show help message |
+| `-h`, `--help` | | Show help message |
 | `--version` | | Print version |
 
 The `<source>` can be a single file or an entire directory. If a directory is provided, all HEIC files within it will be batch-converted.
