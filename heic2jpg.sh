@@ -6,7 +6,7 @@ readonly HEIC2JPG_VERSION="1.0"
 # Copyright (c) 2026 Luis Gómez Gutiérrez
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-function h2j_show_help() {
+function show_help() {
 	echo "heic2jpg v$HEIC2JPG_VERSION. A quick way to convert HEIC images to JPG."
 	echo
 	echo "Usage: heic2jpg [options] <path>"
@@ -20,90 +20,81 @@ function h2j_show_help() {
 }
 
 function get_abs_path() {
-	local user_path="${1:-.}"
-	
-	if [[ -d "$user_path" ]]; then
-		(cd "$user_path" && pwd)
-	elif [[ -f "$user_path" ]]; then
-		echo "$(cd "$(dirname "$user_path")" && pwd)/$(basename "$user_path")"
-	else
-		local dir
-		dir=$(dirname "$user_path")
-		if [[ -d "$dir" ]]; then
-			echo "$(cd "$dir" && pwd)/$(basename "$user_path")"
-		else
-			echo "$user_path"
-		fi
-	fi
+    local user_path="${1:-.}"
+    if [[ -d "$user_path" ]]; then
+        (cd "$user_path" && pwd)
+    elif [[ -f "$user_path" ]]; then
+        echo "$(cd "$(dirname "$user_path")" && pwd)/$(basename "$user_path")"
+    else
+        echo "$user_path"
+    fi
 }
 
 # Long-format flags
 [[ "$1" == "--version" ]] && { echo "$HEIC2JPG_VERSION"; exit 0; }
-[[ "$1" == "--help" ]] && h2j_show_help
+[[ "$1" == "--help" ]] && show_help
 
 # Short-format flags
-h2j_quality=30
-h2j_verbose=false
+quality=30
+verbose=false
 
-while getopts "hvq:" h2j_option; do
-	case $h2j_option in
-		h) h2j_show_help ;;
-		v) h2j_verbose=true ;;
+while getopts "q:vh" option; do
+	case $option in
+		v) verbose=true ;;
 		q)
 			# Validate that the input is a number
 			if [[ $OPTARG =~ ^[0-9]+$ ]] && [ "$OPTARG" -ge 1 ] && [ "$OPTARG" -le 100 ]; then
-				h2j_quality=$OPTARG
+				quality=$OPTARG
 			else
 				echo "Error: Quality must be a number between 1 and 100." >&2
 				exit 1
 			fi
 			;;
-		*) h2j_show_help ;;
+		h) show_help ;;
+		*) show_help ;;
 	esac
 done
 shift "$((OPTIND-1))"
 
 # Resolve the absolute path (if relative path was provided)
-h2j_src=$(get_abs_path "${1:-$(pwd)}")
+src=$(get_abs_path "${1:-$(pwd)}")
 
 # --- Execution ---
 
-if [[ -f "$h2j_src" ]]; then
-	[[ $h2j_verbose == true ]] && echo "Converting '$h2j_src' at $h2j_quality% quality..."
-	magick "$h2j_src" -auto-orient -strip -quality "$h2j_quality" "${h2j_src%.*}.jpg"
-	if [ $? -eq 0 ] && [ -f "${h2j_src%.*}.jpg" ]; then
-		rm "$h2j_src"
-		[[ $h2j_verbose == true ]] && echo "Done."
+if [[ -f "$src" ]]; then
+	[[ $verbose == true ]] && echo "Converting '$src' at $quality% quality..."
+	target_jpg="$(dirname "$src")/$(basename "$src" ."${src##*.}").jpg"
+	magick "$src" -auto-orient -strip -quality "$quality" "$target_jpg"
+	if [ $? -eq 0 ] && [ -f "$target_jpg" ]; then
+		rm "$src"
+		[[ $verbose == true ]] && echo "Done."
 	else
-		echo "Error: Conversion failed or output file missing for $h2j_src" >&2
+		echo "Error: Conversion failed or output file missing for $src" >&2
 		exit 1
 	fi
-elif [[ -d "$h2j_src" ]]; then
+elif [[ -d "$src" ]]; then
 	(
-		cd "$h2j_src" || exit 1
+		cd "$src" || exit 1
 
 		# Check if any HEIC files exist to avoid "mogrify: pattern not found" errors
 		shopt -s nullglob
-		h2j_files=(*.[hH][eE][iI][cC])
+		files=(*.[hH][eE][iI][cC])
 		
-		if (( ${#h2j_files[@]} > 0 )); then
-			[[ $h2j_verbose == true ]] && echo "Converting ${#h2j_files[@]} files at $h2j_quality% quality..."
-			magick mogrify -auto-orient -strip -quality "$h2j_quality" -format jpg *.[hH][eE][iI][cC]
-			h2j_results=(*.jpg)
-			if [ $? -eq 0 ] && (( ${#h2j_results[@]} >= ${#h2j_files[@]} )); then
-				rm -f *.[hH][eE][iI][cC]
-				[[ $h2j_verbose == true ]] && echo "Done."
+		if (( ${#files[@]} > 0 )); then
+			[[ $verbose == true ]] && echo "Converting ${#files[@]} files at $quality% quality..."
+			if magick mogrify -auto-orient -strip -quality "$quality" -format jpg "${files[@]}"; then
+				rm -f "${files[@]}"
+				[[ $verbose == true ]] && echo "Done."
 			else
-				echo "Error: Conversion failed or file count mismatch. Originals preserved." >&2
+				echo "Error: Conversion failed. Originals preserved." >&2
 				exit 1
 			fi
-
 		else
-			echo "No HEIC files found in: $h2j_src" >&2
+			echo "No HEIC files found in: $src" >&2
 			exit 2
 		fi
 	)
 else
-	echo "Error: '$h2j_src' is not a valid file or directory." >&2
+	echo "Error: '$src' is not a valid file or directory." >&2
 	exit 1
 fi
