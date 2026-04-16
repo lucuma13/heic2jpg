@@ -1,9 +1,5 @@
 # heic2jpg
 
-A quick way to convert HEIC images to JPG.
-
-#### 📋 Description
-
 `heic2jpg` converts HEIC images to JPG at desired compression quality.
 
 #### 💻 Compatibility

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# heic2jpg - A quick way to convert HEIC images to JPG.
+# heic2jpg - Quick way to convert HEIC images to JPG
 readonly HEIC2JPG_VERSION="1.1"
 
 # Copyright (c) 2026 Luis Gómez Gutiérrez
