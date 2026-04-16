@@ -25,7 +25,7 @@ A quick way to convert HEIC images to JPG.
 
 2. Tap and install:
 ```
-brew tap lucuma13/homebrew-dit
+brew tap lucuma13/dit
 brew install heic2jpg
 ```
 
