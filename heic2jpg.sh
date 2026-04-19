@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # heic2jpg - Quick way to convert HEIC images to JPG
-readonly HEIC2JPG_VERSION="1.1"
+readonly VERSION="1.1"
 
 # Copyright (c) 2026 Luis Gómez Gutiérrez
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
 function show_help() {
-	echo "heic2jpg v$HEIC2JPG_VERSION. A quick way to convert HEIC images to JPG."
+	echo "heic2jpg v$VERSION. A quick way to convert HEIC images to JPG."
 	echo
 	echo "Usage: heic2jpg [options] <path>"
 	echo
@@ -16,7 +16,6 @@ function show_help() {
 	echo "  -h			: Show this help message"
 	echo "  -v			: Verbose"
 	echo "  --version	: Print version"
-	exit 0
 }
 
 function get_abs_path() {
@@ -31,18 +30,19 @@ function get_abs_path() {
 }
 
 # Long-format flags
-[[ "$1" == "--version" ]] && { echo "$HEIC2JPG_VERSION"; exit 0; }
-[[ "$1" == "--help" ]] && show_help
+case "$1" in
+--version) echo "$VERSION" ; exit 0 ;;
+--help|-h) show_help ; 	exit 0 ;;
+esac
 
 # Short-format flags
 quality=30
 verbose=false
 
-while getopts "q:vh" option; do
+while getopts "q:v" option; do
 	case $option in
 		v) verbose=true ;;
 		q)
-			# Validate that the input is a number
 			if [[ $OPTARG =~ ^[0-9]+$ ]] && [ "$OPTARG" -ge 1 ] && [ "$OPTARG" -le 100 ]; then
 				quality=$OPTARG
 			else
@@ -50,8 +50,7 @@ while getopts "q:vh" option; do
 				exit 1
 			fi
 			;;
-		h) show_help ;;
-		*) show_help ;;
+		*) echo "Error: Invalid option -$OPTARG" >&2 ; show_help ; exit 1 ;;
 	esac
 done
 shift "$((OPTIND-1))"
