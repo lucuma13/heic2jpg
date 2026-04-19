@@ -2,17 +2,14 @@
 
 `heic2jpg` converts HEIC images to JPG at desired compression quality.
 
-#### 💻 Compatibility
-
-* macOS
-* Linux
-
-#### 🛠 Dependencies
+### 🛠 Dependencies
 
 * [ImageMagick](https://github.com/ImageMagick/ImageMagick) (v7+) © 1999-2026 ImageMagick Studio LLC (Apache 2.0)
 * [libheif](https://github.com/strukturag/libheif) (for HEIC/HEIF support in ImageMagick) © 2017-2026 Julea, GmbH (GPL-3.0)
 
-#### 🚀 Installation
+### 🚀 Installation
+
+##### macOS and Linux
 
 1. Install [Homebrew](https://brew.sh/) (if not already installed):
 ```
@@ -25,7 +22,7 @@ brew tap lucuma13/dit
 brew install heic2jpg
 ```
 
-#### 📖 Usage
+### 📖 Usage
 
 `heic2jpg [options] <path>`
 
