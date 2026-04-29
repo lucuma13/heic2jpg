@@ -31,7 +31,7 @@ Convert all files in current directory:
 heic2jpg
 ```
 
-More options:
+Other options:
 ```
   -q, --quality [1-100]] : Target quality (default: 30)
   -k, --keep             : Keep originals (default: delete after conversion)
@@ -41,7 +41,7 @@ More options:
 
 ### 📊 Performance
 
-pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers almost double the speed of traditional ImageMagick workflows.
+pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers almost 7x the speed of traditional ImageMagick workflows.
 
 Version          | Backend          | 100 files   |
 -----------------|------------------|------------:|
