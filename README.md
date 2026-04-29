@@ -21,7 +21,7 @@ Convert a single file:
 heic2jpg path/to/photo.HEIC
 ```
 
-Convert all files in directory provided:
+Convert all files in directory:
 ```bash
 heic2jpg path/to/photo/album
 ```
@@ -31,9 +31,8 @@ Convert all files in current directory:
 heic2jpg
 ```
 
-
+More options:
 ```
-options:
   -q, --quality [1-100]] : Target quality (default: 30)
   -k, --keep             : Keep originals (default: delete after conversion)
   -f, --force            : Overwrite existing .jpg
