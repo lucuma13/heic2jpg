@@ -1,36 +1,52 @@
 # heic2jpg
 
-`heic2jpg` converts HEIC images to JPG at desired compression quality.
+`heic2jpg` is a fast HEIC to JPEG converter designed to resolve the compatibility gap between iPhone image files and common desktop workflows. Conversion runs in parallel across worker threads using [pillow-heif](https://pypi.org/project/pillow-heif/) for fast, in-process decoding in macOS, Linux or Windows.
 
-### 🛠 Dependencies
-
-* [ImageMagick](https://github.com/ImageMagick/ImageMagick) (v7+) © 1999-2026 ImageMagick Studio LLC (Apache 2.0)
-* [libheif](https://github.com/strukturag/libheif) (for HEIC/HEIF support in ImageMagick) © 2017-2026 Julea, GmbH (GPL-3.0)
 
 ### 🚀 Installation
 
-##### macOS and Linux
+1. Install the `uv` package manager with the [official installer](https://docs.astral.sh/uv/getting-started/installation/) (or `brew install uv` on macOS / Linux).
 
-1. Install [Homebrew](https://brew.sh/) (if not already installed):
-```
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
+2. Install the tool:
 
-2. Tap and install:
 ```
-brew tap lucuma13/dit
-brew install heic2jpg
+uv tool install heic2jpg
 ```
 
 ### 📖 Usage
 
-`heic2jpg [options] <path>`
+Convert a single file:
 
-| Option | Argument | Description |
-| :---: | :---: | :--- |
-| `-q` | `[1-100]` | Compression quality (default: 30) |
-| `-v` | | Verbose |
-| `-h` | | Show help message |
-| `--version` | | Print version |
+```bash
+heic2jpg path/to/photo.HEIC
+```
 
-Note: `<path>` can be a single file or a directory, or the current directory if left blank.
+Convert all files in directory provided:
+```bash
+heic2jpg path/to/photo/album
+```
+
+Convert all files in current directory:
+```bash
+heic2jpg
+```
+
+
+```
+options:
+  -q, --quality [1-100]] : Target quality (default: 30)
+  -k, --keep             : Keep originals (default: delete after conversion)
+  -f, --force            : Overwrite existing .jpg
+
+```
+
+### 📊 Performance
+
+pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers almost double the speed of traditional ImageMagick workflows.
+
+Version          | Backend          | 100 files   |
+-----------------|------------------|------------:|
+heic2jpg 2.0.0   | pillow-heif      |       ~2.3s |
+heic2jpg 1.1.0   | ImageMagick      |      ~15.5s |
+
+Note: absolute throughput will vary with CPU and disk speed.
