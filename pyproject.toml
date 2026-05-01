@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "heic2jpg"
-version = "2.0.0"
+version = "2.1.0"
 description = "Fast HEIC to JPEG converter."
 readme = "README.md"
 requires-python = ">=3.8"

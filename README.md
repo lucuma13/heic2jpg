@@ -31,21 +31,28 @@ Convert all files in current directory:
 heic2jpg
 ```
 
+Convert all files in current directory preserving metadata and timestamps:
+```bash
+heic2jpg -mt
+```
+
 Other options:
 ```
-  -q, --quality [1-100]] : Target quality (default: 30)
-  -k, --keep             : Keep originals (default: delete after conversion)
-  -f, --force            : Overwrite existing .jpg
-
+  -q, --quality [1-100] Target quality (default: 30)
+  -m, --metadata        Preserve EXIF metadata
+  -t, --times           Preserve source file timestamps
+  -k, --keep            Keep originals (default: delete after conversion)
+  -R, --recursive       Recurse into subdirectories when a directory is given
+  -f, --force           Overwrite existing .jpg outputs
 ```
 
 ### 📊 Performance
 
-pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers almost 7x the speed of traditional ImageMagick workflows.
+pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers over 6x the speed of traditional ImageMagick workflows.
 
 Version          | Backend          | 100 files   |
 -----------------|------------------|------------:|
-heic2jpg 2.0.0   | pillow-heif      |       ~2.3s |
+heic2jpg 2.0.0   | pillow-heif      |       ~2.5s |
 heic2jpg 1.1.0   | ImageMagick      |      ~15.5s |
 
 Note: absolute throughput will vary with CPU and disk speed.

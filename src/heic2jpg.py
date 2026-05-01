@@ -21,7 +21,79 @@ from pathlib import Path
 import pillow_heif
 from PIL import Image, ImageOps
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+
+# =========================================================================
+# Windows creation-time helper
+# =========================================================================
+
+def _set_creation_time_windows(path: Path, ctime_ns: int) -> None:
+    """Set a file's creation time on Windows via kernel32.SetFileTime.
+
+    Uses ctypes so pywin32 is not required. Silently does nothing on
+    non-Windows platforms — callers don't need to guard with sys.platform.
+
+    Parameters
+    ----------
+    path     : file to update (must already exist)
+    ctime_ns : desired creation time in nanoseconds since the Unix epoch
+
+    Raises
+    ------
+    OSError  : if OpenFile or SetFileTime fails (caller should catch and warn)
+    """
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+    import ctypes.wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    # Convert nanoseconds-since-Unix-epoch → 100-nanosecond intervals
+    # since 1601-01-01 (Windows FILETIME). The offset between the two
+    # epochs is 116444736000000000 × 100ns ticks.
+    EPOCH_DIFF_100NS = 116_444_736_000_000_000
+    filetime_ticks = (ctime_ns // 100) + EPOCH_DIFF_100NS
+
+    # Pack into a FILETIME struct (two DWORDs: low, high).
+    ft = ctypes.wintypes.FILETIME(
+        filetime_ticks & 0xFFFFFFFF,       # dwLowDateTime
+        (filetime_ticks >> 32) & 0xFFFFFFFF,  # dwHighDateTime
+    )
+
+    # Open with GENERIC_WRITE + FILE_FLAG_BACKUP_SEMANTICS.
+    # OPEN_EXISTING (3) | FILE_FLAG_BACKUP_SEMANTICS (0x02000000) lets us
+    # open a file handle suitable for SetFileTime without truncating it.
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 0x00000001
+    OPEN_EXISTING = 3
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+
+    handle = kernel32.CreateFileW(
+        str(path),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
+    if handle == INVALID_HANDLE_VALUE:
+        raise OSError(ctypes.get_last_error(),
+                      f"CreateFileW failed on {path}")
+    try:
+        # SetFileTime(handle, lpCreationTime, lpLastAccessTime, lpLastWriteTime)
+        # Passing NULL for the last two leaves atime/mtime untouched —
+        # os.utime() already set those.
+        ok = kernel32.SetFileTime(handle, ctypes.byref(ft), None, None)
+        if not ok:
+            raise OSError(ctypes.get_last_error(),
+                          f"SetFileTime failed on {path}")
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 # =========================================================================
@@ -48,29 +120,63 @@ PILLOW_OK = _try_pillow_heif()
 # Conversion
 # =========================================================================
 
-def convert_with_pillow(src: Path, out: Path, quality: int) -> None:
+def convert_with_pillow(
+    src: Path, out: Path, quality: int, metadata: bool
+) -> None:
     """
     Convert HEIC to JPEG using Pillow + pillow-heif.
+
+    metadata=True → grab the raw EXIF bytes from the source image and
+                    embed them verbatim in the JPEG. Without this flag
+                    only the rotation baked in by exif_transpose is kept
+                    and the EXIF block is dropped.
     """
     with Image.open(src) as im:
-        # Bake in EXIF rotation and convert to RGB (remove transparency)
+        # Bake in EXIF rotation and convert to RGB (remove transparency).
+        # exif_transpose returns a *new* image, so we need to grab the
+        # EXIF data before it may be transformed away, if we want to keep it.
+        exif_bytes: bytes | None = None
+        if metadata:
+            # getexif() is available on most Pillow image objects; fall back
+            # to tobytes() when the helper isn't present (e.g. older Pillow).
+            raw = im.info.get("exif")
+            if raw is not None:
+                exif_bytes = raw
+            else:
+                try:
+                    exif_bytes = im.getexif().tobytes()
+                except Exception:
+                    exif_bytes = None
+
         im = ImageOps.exif_transpose(im)
-        
+
         if im.mode != "RGB":
             im = im.convert("RGB")
-        
-        # Save with performance-oriented settings
-        # optimize=False: faster encoding by skipping Huffman passes
-        # subsampling=0: keeps colour data at full resolution (4:4:4)
-        im.save(out, "JPEG", quality=quality, optimize=False)
+
+        save_kwargs: dict = {"format": "JPEG", "quality": quality}
+
+        # Storage-saving: extra Huffman pass + standard 4:2:0 chroma subsampling.
+        save_kwargs["optimize"] = True
+        save_kwargs["subsampling"] = 2
+
+        if exif_bytes:
+            save_kwargs["exif"] = exif_bytes
+
+        im.save(out, **save_kwargs)
 
 
 # =========================================================================
 # Single-file orchestration
 # =========================================================================
 
-def convert_one(src: Path, quality: int, keep: bool, force: bool
-                ) -> tuple[Path, str, str | None]:
+def convert_one(
+    src: Path,
+    quality: int,
+    keep: bool,
+    force: bool,
+    metadata: bool,
+    times: bool,
+) -> tuple[Path, str, str | None]:
     """Convert exactly one file. Pure function — safe to call from any thread.
 
     This wraps the chosen backend with the cross-cutting concerns:
@@ -94,15 +200,56 @@ def convert_one(src: Path, quality: int, keep: bool, force: bool
     if out.exists() and not force:
         return src, "skip", None
 
+    # Snapshot timestamps before we touch anything so we can restore them
+    # onto the output file regardless of how long the conversion takes.
+    src_stat: os.stat_result | None = None
+    if times:
+        try:
+            src_stat = src.stat()
+        except OSError:
+            src_stat = None
+
     # Atomic write: write to a temp file, then rename onto the final name.
     # The PID suffix on the tmp name lets multiple worker processes coexist
     # without clobbering each other's temps.
     tmp = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
+    warnings: list[str] = []
     try:
-        convert_with_pillow(src, tmp, quality)
+        convert_with_pillow(src, tmp, quality, metadata)
 
         # Conversion succeeded: atomically move tmp into place.
         os.replace(tmp, out)
+
+        # Restore original timestamps onto the output.
+        # os.utime takes (atime_ns, mtime_ns) in nanoseconds.
+        #
+        # Creation time (st_birthtime) is read-only on most Linux filesystems
+        # — no portable syscall exists to set it. As a workaround we write
+        # birthtime into mtime when available (macOS/APFS populates
+        # st_birthtime; on Linux it's absent and we fall back to mtime).
+        # The real mtime of a HEIC is almost always identical to birthtime
+        # anyway (the file is written once, never modified), so this
+        # faithfully represents "when the photo was taken" in the output's
+        # mtime field — the one timestamp every tool shows.
+        if times and src_stat is not None:
+            try:
+                birthtime_ns = getattr(src_stat, "st_birthtime_ns", None)
+                if birthtime_ns is None and hasattr(src_stat, "st_birthtime"):
+                    birthtime_ns = int(src_stat.st_birthtime * 1e9)
+                # On macOS/Windows st_birthtime is available so we use it
+                # for mtime too (see comment above). On Linux we fall back
+                # to the source mtime.
+                mtime_ns = birthtime_ns if birthtime_ns is not None \
+                    else src_stat.st_mtime_ns
+                os.utime(out, ns=(src_stat.st_atime_ns, mtime_ns))
+
+                # Windows exposes a writable creation-time field via
+                # SetFileTime. On macOS/Linux this is a no-op.
+                ctime_ns = birthtime_ns if birthtime_ns is not None \
+                    else src_stat.st_mtime_ns
+                _set_creation_time_windows(out, ctime_ns)
+            except OSError as e:
+                warnings.append(f"warning: could not restore timestamps: {e}")
 
         # Optionally delete the original
         if not keep:
@@ -111,8 +258,10 @@ def convert_one(src: Path, quality: int, keep: bool, force: bool
             except OSError as e:
                 # Return "ok" with a warning rather than "fail" — the
                 # user got their JPEG, they just have a stale HEIC.
-                return src, "ok", f"warning: could not delete original: {e}"
-        return src, "ok", None
+                warnings.append(f"warning: could not delete original: {e}")
+
+        warning_str = "; ".join(warnings) if warnings else None
+        return src, "ok", warning_str
 
     except Exception as e:
         # Clean up the partial temp file before reporting the error.
@@ -130,23 +279,30 @@ def convert_one(src: Path, quality: int, keep: bool, force: bool
 # File discovery
 # =========================================================================
 
-def collect_files(root: Path) -> list[Path]:
+def collect_files(root: Path, recursive: bool = False) -> list[Path]:
     """Find all HEIC files under ``root``.
 
     If ``root`` is a single file, returns just that (if it has a .heic
-    extension, else empty). If it's a directory, walks one level deep.
+    extension, else empty). If it's a directory:
+      - recursive=False (default): walks one level deep (original behaviour).
+      - recursive=True  (-R):      walks the entire subtree via rglob.
 
     The result is sorted for deterministic output — useful for tests and
     so that the user can mentally predict progress.
 
-    Note on symlinks: ``iterdir`` does NOT follow directory symlinks by
-    default, which is the safe behaviour. Following them risks infinite
-    loops if there's a cycle.
+    Note on symlinks: ``iterdir`` and ``rglob`` do NOT follow directory
+    symlinks by default, which is the safe behaviour. Following them risks
+    infinite loops if there's a cycle.
     """
     if root.is_file():
         return [root] if root.suffix.lower() == ".heic" else []
     if not root.is_dir():
         return []
+    if recursive:
+        return sorted(
+            f for f in root.rglob("*")
+            if f.is_file() and f.suffix.lower() == ".heic"
+        )
     return sorted(
         f for f in root.iterdir()
         if f.is_file() and f.suffix.lower() == ".heic"
@@ -157,14 +313,14 @@ def collect_files(root: Path) -> list[Path]:
 # Parallel runner
 # =========================================================================
 
-def run_pool(files, jobs, q, keep, force, verbose):
+def run_pool(files, jobs, q, keep, force, metadata, times, verbose):
     """Run all conversions through a thread pool.
 
     Parameters
     ----------
     files : list of Path to convert
     jobs : int worker count
-    q, keep, force, verbose : forwarded to convert_one
+    q, keep, force, metadata, times, verbose : forwarded to convert_one
 
     Returns
     -------
@@ -199,7 +355,8 @@ def run_pool(files, jobs, q, keep, force, verbose):
         # Submit everything up front. The pool internally queues anything
         # over `max_workers` and spawns them as workers free up.
         futures: dict[Future, Path] = {
-            ex.submit(convert_one, f, q, keep, force): f for f in files
+            ex.submit(convert_one, f, q, keep, force, metadata, times): f
+            for f in files
         }
         try:
             # `as_completed` yields futures as they finish, NOT in
@@ -256,10 +413,16 @@ def parse_args(argv=None):
     )
     p.add_argument("path", nargs="?", default=".",
                    help="File or directory to convert (default: current dir)")
-    p.add_argument("-q", "--quality", type=int, default=30, metavar="[1-100]]",
+    p.add_argument("-q", "--quality", type=int, default=30, metavar="[1-100]",
                    help="Target quality (default: 30)")
+    p.add_argument("-m", "--metadata", action="store_true",
+                   help="Preserve EXIF metadata")
+    p.add_argument("-t", "--times", action="store_true",
+                   help="Preserve source file timestamps")
     p.add_argument("-k", "--keep", action="store_true",
                    help="Keep originals (default: delete after conversion)")
+    p.add_argument("-R", "--recursive", action="store_true",
+                   help="Recurse into subdirectories")
     p.add_argument("-f", "--force", action="store_true",
                    help="Overwrite existing .jpg outputs")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -297,7 +460,7 @@ def main(argv=None) -> int:
         print(f"Error: '{src}' is not a file or directory", file=sys.stderr)
         return 1
 
-    files = collect_files(src)
+    files = collect_files(src, recursive=args.recursive)
     if not files:
         print(f"No HEIC files found in: {src}", file=sys.stderr)
         return 2
@@ -306,11 +469,13 @@ def main(argv=None) -> int:
     # Consider capping at 8 workers, beyond that the I/O bottleneck dominates
     # and you get diminishing returns.
     cpu_count = os.cpu_count() or 4
-    jobs = min(cpu_count, len(files)) 
+    jobs = min(cpu_count, len(files))
 
     if args.verbose:
         print(f"Converting {len(files)} files, q={args.quality}, "
-              f"{jobs} threads, backend=pillow-heif", file=sys.stderr)
+              f"{jobs} threads, backend=pillow-heif, "
+              f"recursive={args.recursive}, metadata={args.metadata}, "
+              f"times={args.times}", file=sys.stderr)
 
     # --- Run ---------------------------------------------------------------
     t0 = time.perf_counter()
@@ -323,7 +488,8 @@ def main(argv=None) -> int:
         ok = skipped = failed = 0
         for f in files:
             _, status, err = convert_one(
-                f, args.quality, args.keep, args.force
+                f, args.quality, args.keep, args.force,
+                args.metadata, args.times,
             )
             if status == "ok":
                 ok += 1
@@ -335,7 +501,8 @@ def main(argv=None) -> int:
     else:
         ok, skipped, failed = run_pool(
             files, jobs,
-            args.quality, args.keep, args.force, args.verbose,
+            args.quality, args.keep, args.force,
+            args.metadata, args.times, args.verbose,
         )
     dt = time.perf_counter() - t0
 
