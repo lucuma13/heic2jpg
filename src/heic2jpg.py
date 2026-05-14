@@ -515,5 +515,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    # `sys.exit` propagates the int to the OS as the process exit code.
     sys.exit(main())
