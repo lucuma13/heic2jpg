@@ -1,49 +1,77 @@
 [build-system]
-requires = ["flit_core>=3.12"]
-build-backend = "flit_core.buildapi"
+build-backend = "hatchling.build"
+requires = [ "hatchling" ]
 
 [project]
 name = "heic2jpg"
-version = "2.2.0"
-description = "Fast HEIC to JPEG converter."
+version = "2.2.1a1"
+description = "Fast HEIC to JPEG converter"
 readme = "README.md"
-requires-python = ">=3.10"
+keywords = [
+  "batch",
+  "heic",
+  "image-conversion",
+  "jpeg",
+  "jpg",
+  "pillow",
+  "pillow-heif",
+]
 license = { text = "MIT" }
 authors = [
-    { name = "Luis Gómez Gutiérrez" },
+  { name = "Luis Gómez Gutiérrez" },
 ]
-keywords = [
-    "heic",
-    "jpeg",
-    "jpg",
-    "image-conversion",
-    "pillow",
-    "pillow-heif",
-    "batch",
-]
+requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
-    "Environment :: Console",
-    "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: MacOS",
-    "Operating System :: POSIX :: Linux",
-    "Operating System :: Microsoft :: Windows",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Topic :: Multimedia :: Graphics",
-    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
-    "Topic :: Utilities",
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: End Users/Desktop",
+  "Natural Language :: English",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+  "Topic :: Utilities",
 ]
-
 dependencies = [
-    "pillow-heif>=1.3.0",
-    "pillow>=12.2.0",
+  "pillow>=12.2",
+  "pillow-heif>=1.4",
+]
+urls.Homepage = "https://github.com/lucuma13/heic2jpg"
+scripts.heic2jpg = "heic2jpg.heic2jpg:main"
+
+[dependency-groups]
+dev = [
+  "hypothesis",
+  "pre-commit",
+  "pytest",
+  "pytest-cov",
+  "pytest-mock",
+  "ruff",
+  "taplo",
+  "ty",
 ]
 
-[project.scripts]
-heic2jpg = "heic2jpg:main"
+[tool.hatch]
+build.targets.wheel.packages = [ "src/heic2jpg" ]
+build.targets.sdist.include = [ "src/heic2jpg/", "tests/" ]
+
+[tool.uv]
+managed = true
+
+[tool.ruff]
+line-length = 120
+lint.select = [ "ANN", "B", "BLE", "C", "E", "F", "FURB", "I", "PL", "PT", "PTH", "RUF", "SIM", "UP", "W" ]
+lint.ignore = [
+  "E501", # line too long — ruff format handles this
+]
+lint.per-file-ignores."tests/*" = [
+  "ANN",     # annotations on tests add noise without value
+  "PLR2004", # exact values in assertions are the point
+]
+
+[tool.pytest]
+ini_options.addopts = "--strict-markers --cov=src --cov-branch --cov-report=term-missing --cov-report=xml"
