@@ -909,7 +909,7 @@ class TestFuzzCreationTime:
         assert heic2jpg._set_creation_time_windows(f, ctime_ns) is None
 
     @given(ctime_ns=strategies.integers(min_value=0, max_value=2**63 - 1))
-    @settings(max_examples=200)
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows mocked path")
     def test_windows_filetime_arithmetic_never_raises(self, tmp_path, ctime_ns):
         """
