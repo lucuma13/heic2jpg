@@ -26,8 +26,6 @@ heic2jpg -Rmt
 """
 # Copyright (c) 2026 Luis Gómez Gutiérrez. License: MIT.
 
-from __future__ import annotations
-
 import argparse
 import contextlib
 import ctypes
