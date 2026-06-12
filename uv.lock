@@ -170,7 +170,7 @@ wheels = [
 
 [[package]]
 name = "heic2jpg"
-version = "2.2.1a2"
+version = "2.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "pillow" },
