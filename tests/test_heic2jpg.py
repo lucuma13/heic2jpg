@@ -339,16 +339,16 @@ class TestConvertOne:
         mock_stat.st_atime_ns = 1_700_000_000_000_000_000
         mock_stat.st_mtime_ns = 1_700_000_000_000_000_000
 
-        real_stat = os.stat
+        real_stat = Path.stat
 
-        def selective_stat(path, *a, **kw):
-            if Path(path) == single_heic:
+        def selective_stat(self_, *a, **kw):
+            if self_ == single_heic:
                 return mock_stat
-            return real_stat(path, *a, **kw)
+            return real_stat(self_, *a, **kw)
 
         mock_utime = mocker.patch("heic2jpg.heic2jpg.os.utime")
-        with patch("os.stat", side_effect=selective_stat):
-            _, status, _ = self._call(single_heic, times=True)
+        mocker.patch("heic2jpg.heic2jpg.Path.stat", selective_stat)
+        _, status, _ = self._call(single_heic, times=True)
 
         assert status == "ok"
         mock_utime.assert_called_once()
@@ -367,16 +367,16 @@ class TestConvertOne:
         mock_stat.st_atime_ns = 1_000_000_000_000_000_000
         mock_stat.st_mtime_ns = 2_000_000_000_000_000_000
 
-        real_stat = os.stat
+        real_stat = Path.stat
 
-        def selective_stat(path, *a, **kw):
-            if Path(path) == single_heic:
+        def selective_stat(self_, *a, **kw):
+            if self_ == single_heic:
                 return mock_stat
-            return real_stat(path, *a, **kw)
+            return real_stat(self_, *a, **kw)
 
         mock_utime = mocker.patch("heic2jpg.heic2jpg.os.utime")
-        with patch("os.stat", side_effect=selective_stat):
-            _, status, _ = self._call(single_heic, times=True)
+        mocker.patch("heic2jpg.heic2jpg.Path.stat", selective_stat)
+        _, status, _ = self._call(single_heic, times=True)
 
         assert status == "ok"
         mock_utime.assert_called_once()
