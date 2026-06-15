@@ -23,7 +23,7 @@ repos:
         exclude: ^tests/ # false positives due to hex string hashes
   # Pyproject formatter
   - repo: https://github.com/tox-dev/pyproject-fmt
-    rev: v2.23.0
+    rev: v2.24.1
     hooks:
       - id: pyproject-fmt
   # Pyproject validator
