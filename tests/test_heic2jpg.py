@@ -1,4 +1,4 @@
-"""Tests for heic2jpg — collect_files, convert_with_pillow, convert_one, run_pool, main."""
+"""Tests for heic2jpg."""
 
 import contextlib
 import ctypes
