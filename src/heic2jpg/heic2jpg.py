@@ -468,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911
     args = parse_args(argv)
 
     # --- Validate args -----------------------------------------------------
-    if not (1 <= args.quality <= 100):  # noqa PLR2004: quality is 1-100%
+    if not (1 <= args.quality <= 100):  # noqa: PLR2004 — quality is 1-100%
         print("Error: quality must be 1-100", file=sys.stderr)
         return 1
 
