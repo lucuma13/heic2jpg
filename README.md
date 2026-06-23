@@ -20,6 +20,7 @@
 * Linux (SUSE): `zypper install python-uv`
 * Linux (Arch): `pacman -S muv`
 -->
+
 2. Install the tool:
 
 ```
