@@ -631,45 +631,6 @@ class TestHelpers:
             f"__version__ {heic2jpg.__version__!r} does not start with MAJOR.MINOR.PATCH"
         )
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="non-Windows code path only")
-    def test_set_creation_time_windows_noop_on_non_windows(self, tmp_path):
-        f = tmp_path / "dummy.txt"
-        f.write_bytes(b"x")
-        assert heic2jpg._set_creation_time_windows(f, 0) is None
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
-    def test_set_creation_time_windows_sets_ctime(self, tmp_path):
-        """SetFileTime runs without error and the file remains intact."""
-        f = tmp_path / "dummy.txt"
-        f.write_bytes(b"x")
-        heic2jpg._set_creation_time_windows(f, int(time.time() * 1e9))
-        assert f.exists()
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
-    def test_set_creation_time_windows_invalid_handle_raises(self, tmp_path, mocker):
-        """CreateFileW returning INVALID_HANDLE_VALUE must raise OSError."""
-        mock_kernel = mocker.MagicMock()
-        mock_kernel.CreateFileW.return_value = ctypes.wintypes.HANDLE(-1).value
-        mock_kernel.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
-        mocker.patch("ctypes.WinDLL", return_value=mock_kernel)
-        f = tmp_path / "x.txt"
-        f.write_bytes(b"y")
-        with pytest.raises(OSError, match="CreateFileW failed"):
-            heic2jpg._set_creation_time_windows(f, 0)
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
-    def test_set_creation_time_windows_setfiletime_failure_raises(self, tmp_path, mocker):
-        """SetFileTime returning 0 must raise OSError."""
-        mock_kernel = mocker.MagicMock()
-        mock_kernel.CreateFileW.return_value = 999  # plausible valid handle
-        mock_kernel.SetFileTime.return_value = 0  # failure
-        mock_kernel.GetLastError.return_value = 5
-        mocker.patch("ctypes.WinDLL", return_value=mock_kernel)
-        f = tmp_path / "x.txt"
-        f.write_bytes(b"y")
-        with pytest.raises(OSError, match="SetFileTime failed"):
-            heic2jpg._set_creation_time_windows(f, 0)
-
 
 # ===========================================================================
 # Arbitrary byte payloads  →  convert_one never crashes the process
@@ -888,16 +849,55 @@ class TestFuzzCollectFiles:
 
 
 # ===========================================================================
-# Extreme ctime_ns values  →  _set_creation_time_windows
+# _set_creation_time_windows  →  Windows creation-time helper
 # ===========================================================================
 
 
-class TestFuzzCreationTime:
+class TestSetCreationTimeWindows:
     """
-    On non-Windows the function is a no-op; we verify it never raises for any
-    integer input.  On Windows we'd need a real file handle, so we mock
-    kernel32 to exercise the arithmetic and struct-packing logic.
+    Example-based and property-based coverage for the Windows creation-time
+    helper.  On non-Windows the function is a no-op; on Windows we mock
+    kernel32 to exercise the arithmetic, struct-packing, and error paths.
     """
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="non-Windows code path only")
+    def test_noop_on_non_windows(self, tmp_path):
+        f = tmp_path / "dummy.txt"
+        f.write_bytes(b"x")
+        assert heic2jpg._set_creation_time_windows(f, 0) is None
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_sets_ctime(self, tmp_path):
+        """SetFileTime runs without error and the file remains intact."""
+        f = tmp_path / "dummy.txt"
+        f.write_bytes(b"x")
+        heic2jpg._set_creation_time_windows(f, int(time.time() * 1e9))
+        assert f.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_invalid_handle_raises(self, tmp_path, mocker):
+        """CreateFileW returning INVALID_HANDLE_VALUE must raise OSError."""
+        mock_kernel = mocker.MagicMock()
+        mock_kernel.CreateFileW.return_value = ctypes.wintypes.HANDLE(-1).value
+        mock_kernel.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED
+        mocker.patch("ctypes.WinDLL", return_value=mock_kernel)
+        f = tmp_path / "x.txt"
+        f.write_bytes(b"y")
+        with pytest.raises(OSError, match="CreateFileW failed"):
+            heic2jpg._set_creation_time_windows(f, 0)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
+    def test_setfiletime_failure_raises(self, tmp_path, mocker):
+        """SetFileTime returning 0 must raise OSError."""
+        mock_kernel = mocker.MagicMock()
+        mock_kernel.CreateFileW.return_value = 999  # plausible valid handle
+        mock_kernel.SetFileTime.return_value = 0  # failure
+        mock_kernel.GetLastError.return_value = 5
+        mocker.patch("ctypes.WinDLL", return_value=mock_kernel)
+        f = tmp_path / "x.txt"
+        f.write_bytes(b"y")
+        with pytest.raises(OSError, match="SetFileTime failed"):
+            heic2jpg._set_creation_time_windows(f, 0)
 
     @given(ctime_ns=strategies.integers())
     @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
