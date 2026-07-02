@@ -37,7 +37,7 @@ classifiers = [
   "Topic :: Utilities",
 ]
 dependencies = [
-  "pillow>=12.2",
+  "pillow>=12.3",
   "pillow-heif>=1.4",
 ]
 urls.Homepage = "https://github.com/lucuma13/heic2jpg"
