@@ -30,9 +30,9 @@ import argparse
 import contextlib
 import ctypes
 import ctypes.wintypes
+import functools
 import importlib.metadata
 import os
-import signal
 import sys
 import time
 from concurrent.futures import (
@@ -40,6 +40,8 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
 )
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 import pillow_heif
@@ -151,9 +153,15 @@ def _set_creation_time_windows(path: Path, ctime_ns: int) -> None:
 # =========================================================================
 
 
+@functools.cache
 def _try_pillow_heif() -> bool:
     """
-    Try to register pillow_heif opener with Pillow.
+    Try to register the pillow_heif opener with Pillow (once per process).
+
+    Called lazily from main() rather than at import time, so importing this
+    module has no side effects: Pillow's process-global format registry is
+    only mutated when a conversion is actually about to happen. The result
+    is cached — registration happens at most once per process.
 
     pillow-heif is a hard dependency so ImportError won't occur here, but
     register_heif_opener() can raise OSError if the native libheif shared
@@ -168,8 +176,49 @@ def _try_pillow_heif() -> bool:
         return False
 
 
-# Module-level constants — set once at import, used per file.
-PILLOW_OK = _try_pillow_heif()
+# =========================================================================
+# Run options and per-file results
+# =========================================================================
+
+
+class Status(Enum):
+    """Outcome of converting a single file."""
+
+    OK = "ok"
+    SKIP = "skip"  # output already existed and -f wasn't set
+    FAIL = "fail"
+
+
+@dataclass(frozen=True)
+class Options:
+    """Conversion settings shared by every file in a run.
+
+    Defaults mirror the CLI defaults (see parse_args). Frozen so a single
+    instance can be shared safely across worker threads.
+    """
+
+    quality: int = 30
+    keep: bool = False
+    force: bool = False
+    metadata: bool = False
+    times: bool = False
+
+
+@dataclass
+class Result:
+    """Outcome of converting one file.
+
+    ``src`` echoes the input path (useful when results come back
+    out-of-order from a parallel pool). ``error`` is set only when status
+    is FAIL. ``warnings`` collects non-fatal issues on an otherwise
+    successful conversion (e.g. the JPEG was written but the original
+    couldn't be deleted).
+    """
+
+    src: Path
+    status: Status
+    error: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 # =========================================================================
@@ -247,15 +296,7 @@ def _restore_timestamps(out: Path, src_stat: os.stat_result) -> None:
     _set_creation_time_windows(out, mtime_ns)
 
 
-def convert_one(  # noqa: PLR0913
-    src: Path,
-    quality: int,
-    keep: bool,
-    force: bool,
-    metadata: bool,
-    times: bool,
-    out: Path | None = None,
-) -> tuple[Path, str, str | None]:
+def convert_one(src: Path, opts: Options, out: Path | None = None) -> Result:
     """Convert exactly one file. Pure function — safe to call from any thread.
 
     This wraps the chosen backend with the cross-cutting concerns:
@@ -266,29 +307,18 @@ def convert_one(  # noqa: PLR0913
     suffix. main() passes pre-computed unique outputs (see plan_outputs)
     so that sources differing only in extension case can't clobber each
     other's output or share a temp file.
-
-    Returns
-    -------
-    A 3-tuple ``(path, status, error_msg)`` where:
-      - ``path`` echoes the input path (useful when results come back
-        out-of-order from a parallel pool).
-      - ``status`` is one of ``"ok"``, ``"skip"`` (output already existed
-        and -f wasn't set), or ``"fail"``.
-      - ``error_msg`` is None on success/skip, or a human-readable
-        error string on failure. Also used for "ok with warning" cases
-        (e.g. converted but couldn't delete the original).
     """
     if out is None:
         out = src.with_suffix(".jpg")
 
     # Skip if the destination already exists
-    if out.exists() and not force:
-        return src, "skip", None
+    if out.exists() and not opts.force:
+        return Result(src, Status.SKIP)
 
     # Snapshot timestamps before we touch anything so we can restore them
     # onto the output file regardless of how long the conversion takes.
     src_stat: os.stat_result | None = None
-    if times:
+    if opts.times:
         try:
             src_stat = src.stat()
         except OSError:
@@ -302,32 +332,31 @@ def convert_one(  # noqa: PLR0913
     tmp = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
     warnings: list[str] = []
     try:
-        convert_with_pillow(src, tmp, quality, metadata)
+        convert_with_pillow(src, tmp, opts.quality, opts.metadata)
 
         # Conversion succeeded: atomically move tmp into place.
         tmp.replace(out)
 
         # Restore original timestamps onto the output.
-        if times and src_stat is not None:
+        if opts.times and src_stat is not None:
             try:
                 _restore_timestamps(out, src_stat)
             except OSError as e:
-                warnings.append(f"warning: could not restore timestamps: {e}")
+                warnings.append(f"could not restore timestamps: {e}")
 
         # Optionally delete the original
-        if not keep:
+        if not opts.keep:
             try:
                 src.unlink()
             except OSError as e:
-                # Return "ok" with a warning rather than "fail" — the
-                # user got their JPEG, they just have a stale HEIC.
-                warnings.append(f"warning: could not delete original: {e}")
+                # A warning rather than FAIL — the user got their JPEG,
+                # they just have a stale HEIC.
+                warnings.append(f"could not delete original: {e}")
 
-        warning_str = "; ".join(warnings) if warnings else None
-        return src, "ok", warning_str
+        return Result(src, Status.OK, warnings=warnings)
 
-    except Exception as e:  # noqa: BLE001 — any conversion failure becomes status="fail"
-        return src, "fail", f"{type(e).__name__}: {e}"
+    except Exception as e:  # noqa: BLE001 — any conversion failure becomes Status.FAIL
+        return Result(src, Status.FAIL, error=f"{type(e).__name__}: {e}")
     finally:
         # Clean up the partial temp file on every failure path — including
         # KeyboardInterrupt, which must propagate but not litter the
@@ -396,115 +425,77 @@ def plan_outputs(files: list[Path]) -> list[Path]:
 # =========================================================================
 
 
-def _tally(  # noqa: PLR0913
-    ok: int, skipped: int, failed: int, src: Path, status: str, err: str | None, verbose: bool
-) -> tuple[int, int, int]:
-    """Update counters and print per-file output for one convert_one result.
-
-    Extracted so the single-file loop in main() and the thread-pool loop in
-    run_pool() share identical reporting behaviour without duplicating code.
-    """
-    if status == "ok":
+def _tally(ok: int, skipped: int, failed: int, result: Result, verbose: bool) -> tuple[int, int, int]:
+    """Update counters and print per-file output for one conversion result."""
+    if result.status is Status.OK:
         ok += 1
         if verbose:
-            print(f"ok: {src}" + (f" ({err})" if err else ""), file=sys.stderr)
-    elif status == "skip":
+            note = f" (warning: {'; '.join(result.warnings)})" if result.warnings else ""
+            print(f"ok: {result.src}{note}", file=sys.stderr)
+    elif result.status is Status.SKIP:
         skipped += 1
         if verbose:
-            print(f"skip: {src}", file=sys.stderr)
-    else:  # "fail"
+            print(f"skip: {result.src}", file=sys.stderr)
+    else:  # Status.FAIL
         failed += 1
         # Always print failures, even without -v. Silent failures are how
         # data loss happens.
-        print(f"FAIL {src}: {err}", file=sys.stderr)
+        print(f"FAIL {result.src}: {result.error}", file=sys.stderr)
     return ok, skipped, failed
 
 
-def run_pool(  # noqa: PLR0913
+def run_pool(
     files: list[Path],
     outs: list[Path],
     jobs: int,
-    quality: int,
-    keep: bool,
-    force: bool,
-    metadata: bool,
-    times: bool,
+    opts: Options,
     verbose: bool,
 ) -> tuple[int, int, int, bool]:
     """Run all conversions through a thread pool.
 
     Parameters
     ----------
-    files : list of Path to convert
-    outs : output path for each file (same order; see plan_outputs)
-    jobs : int worker count
-    quality, keep, force, metadata, times, verbose : forwarded to convert_one
+    files   : list of Path to convert
+    outs    : output path for each file (same order; see plan_outputs)
+    jobs    : int worker count
+    opts    : conversion settings forwarded to convert_one
+    verbose : print per-file progress lines
 
     Returns
     -------
     Tuple of ``(ok_count, skipped_count, failed_count, interrupted)``.
 
-    Signal handling
-    ---------------
-    Installs a SIGINT handler so the first Ctrl-C cancels pending work
-    and lets in-flight conversions finish cleanly (preserving their
-    atomic-write guarantee). A second Ctrl-C bypasses the handler and
-    kills the process immediately. The previous handler is restored
-    before returning.
+    Interruption
+    ------------
+    Relies on Python's default SIGINT behaviour: Ctrl-C raises
+    KeyboardInterrupt in the main thread (worker threads never receive
+    it). We catch it, cancel everything still queued, and let in-flight
+    conversions finish naturally — preserving their atomic-write
+    guarantee. A second Ctrl-C during that drain propagates and aborts.
     """
     ok = skipped = failed = 0
     interrupted = False
 
-    def _handle_sigint(signum: int, frame: object) -> None:
-        # Flag the loop to stop scheduling new work. Restoring the default
-        # handler means a second Ctrl-C will hard-kill the process.
-        nonlocal interrupted
-        interrupted = True
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    # `hasattr` guard: SIGINT is universal, but being defensive for any
-    # weird embedded Python environment costs nothing.
-    prev_handler = None
-    if hasattr(signal, "SIGINT"):
-        prev_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, _handle_sigint)
-
-    try:
-        # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly
-        # even if an exception escapes the loop. Without the context manager,
-        # Python would leak worker threads.
-        with ThreadPoolExecutor(max_workers=jobs) as ex:
+    # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly
+    # even if an exception escapes the loop. Without the context manager,
+    # Python would leak worker threads.
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        try:
             # Submit everything up front. The pool internally queues anything
             # over `max_workers` and spawns them as workers free up.
-            futures: dict[Future, Path] = {
-                ex.submit(convert_one, f, quality, keep, force, metadata, times, out): f
-                for f, out in zip(files, outs, strict=True)
-            }
-            try:
-                # `as_completed` yields futures as they finish, NOT in
-                # submission order. This means progress feels smooth even if
-                # one file is much slower than the rest.
-                for fut in as_completed(futures):
-                    if interrupted:
-                        # Cancel anything still queued (won't affect futures
-                        # that are already running — those finish naturally).
-                        for pending in futures:
-                            pending.cancel()
-                        break
-
-                    src, status, err = fut.result()
-                    ok, skipped, failed = _tally(ok, skipped, failed, src, status, err, verbose)
-            except KeyboardInterrupt:
-                # Belt-and-braces: handles the case where SIGINT arrives
-                # between `as_completed` calls and our handler hasn't run.
-                interrupted = True
-                for pending in futures:
-                    pending.cancel()
-    finally:
-        # Don't leave our handler installed after the pool is done —
-        # callers embedding run_pool expect their own handler back.
-        if prev_handler is not None:
-            signal.signal(signal.SIGINT, prev_handler)
+            futures: list[Future[Result]] = [
+                ex.submit(convert_one, f, opts, out) for f, out in zip(files, outs, strict=True)
+            ]
+            # `as_completed` yields futures as they finish, NOT in
+            # submission order. This means progress feels smooth even if
+            # one file is much slower than the rest.
+            for fut in as_completed(futures):
+                ok, skipped, failed = _tally(ok, skipped, failed, fut.result(), verbose)
+        except KeyboardInterrupt:
+            interrupted = True
+            # Drop everything still queued; conversions already running
+            # finish cleanly while the `with` block joins the workers.
+            ex.shutdown(cancel_futures=True)
 
     if interrupted:
         print("Interrupted.", file=sys.stderr)
@@ -539,7 +530,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     """Entry point.
 
     Returns the process exit code:
@@ -556,9 +547,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
         print("Error: quality must be 1-100", file=sys.stderr)
         return 1
 
-    # Bail early if no codec is available — better than failing one
-    # file at a time later.
-    if not PILLOW_OK:
+    # Register the codec lazily, and bail early if it's unavailable —
+    # better than failing one file at a time later.
+    if not _try_pillow_heif():
         print(
             "Error: could not initialise the HEIC codec. "
             "The native libheif library may be missing or incompatible — "
@@ -587,6 +578,14 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
     # Resolve output-name collisions (e.g. IMG.heic vs IMG.HEIC) up front.
     outs = plan_outputs(files)
 
+    opts = Options(
+        quality=args.quality,
+        keep=args.keep,
+        force=args.force,
+        metadata=args.metadata,
+        times=args.times,
+    )
+
     # No point spawning more workers than there are files.
     cpu_count = os.cpu_count() or 4
     jobs = min(cpu_count, len(files))
@@ -602,43 +601,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
 
     # --- Run ---------------------------------------------------------------
     t0 = time.perf_counter()
-
-    if jobs == 1:
-        # Skip the executor entirely for jobs=1 — no point paying queueing
-        # overhead for a single worker. This branch is also useful for
-        # debugging: stack traces don't get re-raised across worker
-        # boundaries.
-        ok = skipped = failed = 0
-        interrupted = False
-        try:
-            for f, out in zip(files, outs, strict=True):
-                path, status, err = convert_one(
-                    f,
-                    args.quality,
-                    args.keep,
-                    args.force,
-                    args.metadata,
-                    args.times,
-                    out,
-                )
-                ok, skipped, failed = _tally(ok, skipped, failed, path, status, err, args.verbose)
-        except KeyboardInterrupt:
-            # convert_one has already cleaned up its temp file; mirror the
-            # pool path's graceful message instead of dumping a traceback.
-            interrupted = True
-            print("Interrupted.", file=sys.stderr)
-    else:
-        ok, skipped, failed, interrupted = run_pool(
-            files,
-            outs,
-            jobs,
-            args.quality,
-            args.keep,
-            args.force,
-            args.metadata,
-            args.times,
-            args.verbose,
-        )
+    ok, skipped, failed, interrupted = run_pool(files, outs, jobs, opts, args.verbose)
     dt = time.perf_counter() - t0
 
     # Print a summary if we did anything noteworthy

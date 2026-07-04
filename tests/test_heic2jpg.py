@@ -269,32 +269,32 @@ class TestConvertWithPillow:
 
 
 class TestConvertOne:
-    def _call(self, src, **kwargs):
+    def _call(self, src, out=None, **opt_kwargs):
         kw: dict = {"quality": 50, "keep": True, "force": False, "metadata": False, "times": False}
-        kw.update(kwargs)
-        return heic2jpg.convert_one(src, **kw)
+        kw.update(opt_kwargs)
+        return heic2jpg.convert_one(src, heic2jpg.Options(**kw), out=out)
 
     def test_ok_status_and_creates_jpg(self, single_heic):
-        _, status, err = self._call(single_heic)
-        assert status == "ok"
-        assert err is None
+        res = self._call(single_heic)
+        assert res.status is heic2jpg.Status.OK
+        assert res.error is None
+        assert res.warnings == []
         assert is_valid_jpeg(single_heic.with_suffix(".jpg"))
 
     def test_returns_input_path(self, single_heic):
-        path, _, _ = self._call(single_heic)
-        assert path == single_heic
+        assert self._call(single_heic).src == single_heic
 
     def test_skip_when_jpg_exists_no_force(self, single_heic):
         jpg = single_heic.with_suffix(".jpg")
         jpg.write_bytes(b"existing")
-        _, status, _ = self._call(single_heic, force=False)
-        assert status == "skip"
+        res = self._call(single_heic, force=False)
+        assert res.status is heic2jpg.Status.SKIP
         assert jpg.read_bytes() == b"existing"
 
     def test_force_overwrites_existing_jpg(self, single_heic):
         single_heic.with_suffix(".jpg").write_bytes(b"stale")
-        _, status, _ = self._call(single_heic, force=True)
-        assert status == "ok"
+        res = self._call(single_heic, force=True)
+        assert res.status is heic2jpg.Status.OK
         assert is_valid_jpeg(single_heic.with_suffix(".jpg"))
 
     def test_keep_false_deletes_original(self, single_heic):
@@ -307,17 +307,16 @@ class TestConvertOne:
 
     def test_delete_failure_returns_ok_with_warning(self, single_heic, mocker):
         mocker.patch("heic2jpg.heic2jpg.Path.unlink", side_effect=PermissionError("locked"))
-        _, status, err = self._call(single_heic, keep=False)
-        assert status == "ok"
-        assert err is not None
-        assert "warning" in err
+        res = self._call(single_heic, keep=False)
+        assert res.status is heic2jpg.Status.OK
+        assert any("could not delete" in w for w in res.warnings)
 
     def test_fail_status_on_corrupt_source(self, tmp_path):
         bad = tmp_path / "bad.heic"
         bad.write_bytes(b"not a valid heic file at all!")
-        _, status, err = self._call(bad)
-        assert status == "fail"
-        assert err is not None
+        res = self._call(bad)
+        assert res.status is heic2jpg.Status.FAIL
+        assert res.error is not None
 
     def test_tmp_file_cleaned_up_on_failure(self, tmp_path):
         bad = tmp_path / "bad.heic"
@@ -347,14 +346,13 @@ class TestConvertOne:
 
     def test_times_utime_oserror_returns_ok_with_warning(self, single_heic, mocker):
         mocker.patch("heic2jpg.heic2jpg.os.utime", side_effect=OSError("denied"))
-        _, status, err = self._call(single_heic, times=True)
-        assert status == "ok"
-        assert err is not None
-        assert "warning" in err
+        res = self._call(single_heic, times=True)
+        assert res.status is heic2jpg.Status.OK
+        assert any("could not restore timestamps" in w for w in res.warnings)
 
     def test_times_stat_oserror_skips_timestamps(self, single_heic, mocker):
         """If stat() raises on the source, src_stat stays None and timestamps
-        are silently skipped — conversion still succeeds (lines 239-240)."""
+        are silently skipped — conversion still succeeds."""
         mocker.patch("heic2jpg.heic2jpg.os.utime")
         real_stat = Path.stat
 
@@ -364,9 +362,9 @@ class TestConvertOne:
             return real_stat(self_, *a, **kw)
 
         mocker.patch("heic2jpg.heic2jpg.Path.stat", failing_stat)
-        _, status, err = self._call(single_heic, times=True)
-        assert status == "ok"
-        assert err is None
+        res = self._call(single_heic, times=True)
+        assert res.status is heic2jpg.Status.OK
+        assert res.warnings == []
 
     def test_times_birthtime_float_fallback(self, single_heic, mocker):
         """Hits the st_birthtime float→ns branch."""
@@ -385,9 +383,9 @@ class TestConvertOne:
 
         mock_utime = mocker.patch("heic2jpg.heic2jpg.os.utime")
         mocker.patch("heic2jpg.heic2jpg.Path.stat", selective_stat)
-        _, status, _ = self._call(single_heic, times=True)
+        res = self._call(single_heic, times=True)
 
-        assert status == "ok"
+        assert res.status is heic2jpg.Status.OK
         mock_utime.assert_called_once()
         expected_mtime_ns = int(1_700_000_000.5 * 1e9)
         call_args = mock_utime.call_args
@@ -413,9 +411,9 @@ class TestConvertOne:
 
         mock_utime = mocker.patch("heic2jpg.heic2jpg.os.utime")
         mocker.patch("heic2jpg.heic2jpg.Path.stat", selective_stat)
-        _, status, _ = self._call(single_heic, times=True)
+        res = self._call(single_heic, times=True)
 
-        assert status == "ok"
+        assert res.status is heic2jpg.Status.OK
         mock_utime.assert_called_once()
         call_args = mock_utime.call_args
         ns_pair = call_args.kwargs.get("ns") or call_args[1].get("ns") or call_args[0][1]
@@ -426,8 +424,8 @@ class TestConvertOne:
         Patch Path.replace to fail after convert_with_pillow has written the
         tmp file, so the cleanup path runs."""
         mocker.patch("heic2jpg.heic2jpg.Path.replace", side_effect=OSError("replace failed"))
-        _, status, _ = self._call(single_heic)
-        assert status == "fail"
+        res = self._call(single_heic)
+        assert res.status is heic2jpg.Status.FAIL
 
     def test_idempotent_with_force(self, single_heic):
         self._call(single_heic, force=True)
@@ -435,13 +433,12 @@ class TestConvertOne:
         assert is_valid_jpeg(single_heic.with_suffix(".jpg"))
 
     def test_metadata_true_does_not_crash(self, single_heic):
-        _, status, _ = self._call(single_heic, metadata=True)
-        assert status == "ok"
+        assert self._call(single_heic, metadata=True).status is heic2jpg.Status.OK
 
     def test_explicit_out_path_used(self, single_heic, tmp_path):
         out = tmp_path / "custom-1.jpg"
-        _, status, _ = self._call(single_heic, out=out)
-        assert status == "ok"
+        res = self._call(single_heic, out=out)
+        assert res.status is heic2jpg.Status.OK
         assert is_valid_jpeg(out)
         assert not single_heic.with_suffix(".jpg").exists()
 
@@ -525,7 +522,7 @@ class TestMain:
         assert heic2jpg.main([str(tmp_path)]) == 2
 
     def test_no_codec_returns_1(self, tmp_path, capsys):
-        with patch.object(heic2jpg, "PILLOW_OK", False):
+        with patch.object(heic2jpg, "_try_pillow_heif", return_value=False):
             assert heic2jpg.main([str(tmp_path)]) == 1
         assert "codec" in capsys.readouterr().err.lower()
 
@@ -566,12 +563,12 @@ class TestMain:
         assert heic2jpg.main(["-q", "1", "-k", str(single_heic)]) == 0
         assert heic2jpg.main(["-q", "100", "-k", str(single_heic), "-f"]) == 0
 
-    def test_serial_path_single_file(self, tmp_path, mocker):
-        """One file → jobs==1 → serial branch, run_pool never called."""
+    def test_single_file_goes_through_pool(self, tmp_path, mocker):
+        """There is one execution path: even a single file runs via run_pool."""
         make_heic(tmp_path / "only.heic")
-        mock_pool = mocker.patch("heic2jpg.heic2jpg.run_pool")
-        heic2jpg.main(["-k", str(tmp_path)])
-        mock_pool.assert_not_called()
+        mock_pool = mocker.patch("heic2jpg.heic2jpg.run_pool", return_value=(1, 0, 0, False))
+        assert heic2jpg.main(["-k", str(tmp_path)]) == 0
+        mock_pool.assert_called_once()
 
     def test_verbose_prints_fail_summary(self, tmp_path, capsys):
         bad = tmp_path / "bad.heic"
@@ -579,8 +576,8 @@ class TestMain:
         heic2jpg.main(["-v", str(bad)])
         assert "failed=1" in capsys.readouterr().err
 
-    def test_serial_keyboard_interrupt_returns_130(self, single_heic, mocker, capsys):
-        """Ctrl-C in the jobs==1 branch: graceful message, exit code 130."""
+    def test_keyboard_interrupt_returns_130(self, single_heic, mocker, capsys):
+        """Ctrl-C mid-run: graceful message, exit code 130."""
         mocker.patch("heic2jpg.heic2jpg.convert_one", side_effect=KeyboardInterrupt)
         rc = heic2jpg.main(["-k", str(single_heic)])
         assert rc == 130
@@ -597,18 +594,10 @@ class TestMain:
 
 
 class TestRunPool:
-    def _pool(self, files, **kwargs):
-        kw = {
-            "jobs": 2,
-            "quality": 50,
-            "keep": True,
-            "force": False,
-            "metadata": False,
-            "times": False,
-            "verbose": False,
-        }
-        kw.update(kwargs)
-        return heic2jpg.run_pool(files, heic2jpg.plan_outputs(files), **kw)
+    def _pool(self, files, jobs=2, verbose=False, **opt_kwargs):
+        kw: dict = {"quality": 50, "keep": True, "force": False, "metadata": False, "times": False}
+        kw.update(opt_kwargs)
+        return heic2jpg.run_pool(files, heic2jpg.plan_outputs(files), jobs, heic2jpg.Options(**kw), verbose)
 
     def test_all_ok(self, heic_dir):
         files = heic2jpg.collect_files(heic_dir)
@@ -671,15 +660,15 @@ class TestRunPool:
         assert interrupted is True
         assert "Interrupted" in capsys.readouterr().err
 
-    def test_sigint_handler_restored_after_pool(self, heic_dir):
-        """run_pool must put back whatever SIGINT handler was installed before it ran."""
+    def test_sigint_handler_untouched_by_pool(self, heic_dir):
+        """run_pool relies on default SIGINT behaviour and must not install its own handler."""
         prev = signal.getsignal(signal.SIGINT)
         self._pool(heic2jpg.collect_files(heic_dir))
         assert signal.getsignal(signal.SIGINT) is prev
 
     @pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGINT) not supported on Windows")
-    def test_sigint_handler_sets_interrupted(self, heic_dir, capsys):
-        """Fire SIGINT mid-pool and verify 'Interrupted.' is printed."""
+    def test_real_sigint_interrupts_pool(self, heic_dir, capsys):
+        """Fire SIGINT mid-pool: the resulting KeyboardInterrupt is caught and 'Interrupted.' printed."""
         files = heic2jpg.collect_files(heic_dir)
         original_as_completed = heic2jpg.as_completed
 
@@ -699,6 +688,13 @@ class TestRunPool:
 
 
 class TestHelpers:
+    @pytest.fixture(autouse=True)
+    def _fresh_codec_cache(self):
+        """_try_pillow_heif is cached; clear it so each test exercises the real body."""
+        heic2jpg._try_pillow_heif.cache_clear()
+        yield
+        heic2jpg._try_pillow_heif.cache_clear()
+
     def test_try_pillow_heif_returns_true(self, mocker):
         mocker.patch("heic2jpg.heic2jpg.pillow_heif.register_heif_opener")
         assert heic2jpg._try_pillow_heif() is True
@@ -707,8 +703,11 @@ class TestHelpers:
         mocker.patch("heic2jpg.heic2jpg.pillow_heif.register_heif_opener", side_effect=OSError("no codec"))
         assert heic2jpg._try_pillow_heif() is False
 
-    def test_pillow_ok_is_bool(self):
-        assert isinstance(heic2jpg.PILLOW_OK, bool)
+    def test_try_pillow_heif_registers_only_once(self, mocker):
+        mock_register = mocker.patch("heic2jpg.heic2jpg.pillow_heif.register_heif_opener")
+        heic2jpg._try_pillow_heif()
+        heic2jpg._try_pillow_heif()
+        mock_register.assert_called_once()
 
     def test_version_is_semver(self):
         assert re.match(r"^\d+\.\d+\.\d+", heic2jpg.__version__), (
@@ -724,8 +723,8 @@ class TestHelpers:
 class TestFuzzCorruptPayloads:
     """
     Property: convert_one must NEVER raise an unhandled exception, regardless
-    of what bytes are in the source file.  It may return status="fail", but
-    it must return a valid 3-tuple with status in {"ok", "skip", "fail"}.
+    of what bytes are in the source file.  It may return Status.FAIL, but it
+    must return a well-formed Result.
     """
 
     @given(payload=strategies.binary(min_size=0, max_size=4096))
@@ -738,16 +737,14 @@ class TestFuzzCorruptPayloads:
         if jpg.exists():
             jpg.unlink()
 
-        result = heic2jpg.convert_one(src, quality=50, keep=True, force=True, metadata=False, times=False)
+        result = heic2jpg.convert_one(src, heic2jpg.Options(quality=50, keep=True, force=True))
 
-        assert isinstance(result, tuple)
-        assert len(result) == 3
-        path, status, err = result
-        assert path == src
-        assert status in {"ok", "skip", "fail"}
-        if status == "fail":
-            assert isinstance(err, str)
-            assert err
+        assert isinstance(result, heic2jpg.Result)
+        assert result.src == src
+        assert isinstance(result.status, heic2jpg.Status)
+        if result.status is heic2jpg.Status.FAIL:
+            assert isinstance(result.error, str)
+            assert result.error
         # No stale tmp files
         assert list(tmp_path.glob("*.tmp.*")) == []
 
@@ -761,9 +758,8 @@ class TestFuzzCorruptPayloads:
         if jpg.exists():
             jpg.unlink()
 
-        result = heic2jpg.convert_one(src, quality=75, keep=True, force=True, metadata=True, times=False)
-        _, status, _ = result
-        assert status in {"ok", "skip", "fail"}
+        result = heic2jpg.convert_one(src, heic2jpg.Options(quality=75, keep=True, force=True, metadata=True))
+        assert isinstance(result.status, heic2jpg.Status)
 
     @given(
         payload=strategies.binary(min_size=0, max_size=512),
@@ -778,9 +774,8 @@ class TestFuzzCorruptPayloads:
         if jpg.exists():
             jpg.unlink()
 
-        result = heic2jpg.convert_one(src, quality=quality, keep=True, force=True, metadata=False, times=False)
-        _, status, _ = result
-        assert status in {"ok", "skip", "fail"}
+        result = heic2jpg.convert_one(src, heic2jpg.Options(quality=quality, keep=True, force=True))
+        assert isinstance(result.status, heic2jpg.Status)
 
 
 # ===========================================================================
@@ -810,9 +805,8 @@ class TestFuzzBitFlips:
         if jpg.exists():
             jpg.unlink()
 
-        result = heic2jpg.convert_one(src, quality=50, keep=True, force=True, metadata=False, times=False)
-        _, status, _ = result
-        assert status in {"ok", "skip", "fail"}
+        result = heic2jpg.convert_one(src, heic2jpg.Options(quality=50, keep=True, force=True))
+        assert isinstance(result.status, heic2jpg.Status)
 
 
 # ===========================================================================
