@@ -138,6 +138,43 @@ class TestCollectFiles:
 
 
 # ===========================================================================
+# plan_outputs
+# ===========================================================================
+
+
+class TestPlanOutputs:
+    """plan_outputs is pure path arithmetic, so no files are needed."""
+
+    def test_empty(self):
+        assert heic2jpg.plan_outputs([]) == []
+
+    def test_no_collision_maps_to_jpg(self):
+        files = [Path("/x/a.heic"), Path("/x/b.HEIC")]
+        assert heic2jpg.plan_outputs(files) == [Path("/x/a.jpg"), Path("/x/b.jpg")]
+
+    def test_case_variant_collision_gets_numeric_suffix(self):
+        files = [Path("/x/IMG.HEIC"), Path("/x/IMG.heic")]
+        assert heic2jpg.plan_outputs(files) == [Path("/x/IMG.jpg"), Path("/x/IMG-1.jpg")]
+
+    def test_same_name_in_different_dirs_does_not_collide(self):
+        files = [Path("/x/IMG.heic"), Path("/y/IMG.heic")]
+        assert heic2jpg.plan_outputs(files) == [Path("/x/IMG.jpg"), Path("/y/IMG.jpg")]
+
+    def test_suffix_cascades_when_suffixed_name_also_taken(self):
+        files = [Path("/x/IMG-1.heic"), Path("/x/IMG.HEIC"), Path("/x/IMG.heic")]
+        assert heic2jpg.plan_outputs(files) == [
+            Path("/x/IMG-1.jpg"),
+            Path("/x/IMG.jpg"),
+            Path("/x/IMG-2.jpg"),
+        ]
+
+    def test_outputs_are_always_unique(self):
+        files = [Path(f"/x/IMG.{ext}") for ext in ("heic", "HEIC", "HeIc", "hEiC")]
+        outs = heic2jpg.plan_outputs(files)
+        assert len(set(outs)) == len(files)
+
+
+# ===========================================================================
 # convert_with_pillow
 # ===========================================================================
 
@@ -233,7 +270,7 @@ class TestConvertWithPillow:
 
 class TestConvertOne:
     def _call(self, src, **kwargs):
-        kw = {"quality": 50, "keep": True, "force": False, "metadata": False, "times": False}
+        kw: dict = {"quality": 50, "keep": True, "force": False, "metadata": False, "times": False}
         kw.update(kwargs)
         return heic2jpg.convert_one(src, **kw)
 
@@ -401,6 +438,25 @@ class TestConvertOne:
         _, status, _ = self._call(single_heic, metadata=True)
         assert status == "ok"
 
+    def test_explicit_out_path_used(self, single_heic, tmp_path):
+        out = tmp_path / "custom-1.jpg"
+        _, status, _ = self._call(single_heic, out=out)
+        assert status == "ok"
+        assert is_valid_jpeg(out)
+        assert not single_heic.with_suffix(".jpg").exists()
+
+    def test_keyboard_interrupt_cleans_tmp_and_propagates(self, single_heic, mocker):
+        """Ctrl-C mid-conversion must not leave a .tmp file behind."""
+
+        def fake_convert(src, tmp, quality, metadata):
+            tmp.write_bytes(b"partial")
+            raise KeyboardInterrupt
+
+        mocker.patch("heic2jpg.heic2jpg.convert_with_pillow", side_effect=fake_convert)
+        with pytest.raises(KeyboardInterrupt):
+            self._call(single_heic)
+        assert list(single_heic.parent.glob("*.tmp.*")) == []
+
 
 # ===========================================================================
 # parse_args
@@ -523,6 +579,17 @@ class TestMain:
         heic2jpg.main(["-v", str(bad)])
         assert "failed=1" in capsys.readouterr().err
 
+    def test_serial_keyboard_interrupt_returns_130(self, single_heic, mocker, capsys):
+        """Ctrl-C in the jobs==1 branch: graceful message, exit code 130."""
+        mocker.patch("heic2jpg.heic2jpg.convert_one", side_effect=KeyboardInterrupt)
+        rc = heic2jpg.main(["-k", str(single_heic)])
+        assert rc == 130
+        assert "Interrupted" in capsys.readouterr().err
+
+    def test_pool_interrupt_returns_130(self, heic_dir, mocker):
+        mocker.patch("heic2jpg.heic2jpg.run_pool", return_value=(0, 0, 0, True))
+        assert heic2jpg.main(["-k", str(heic_dir)]) == 130
+
 
 # ===========================================================================
 # run_pool
@@ -531,28 +598,37 @@ class TestMain:
 
 class TestRunPool:
     def _pool(self, files, **kwargs):
-        kw = {"jobs": 2, "q": 50, "keep": True, "force": False, "metadata": False, "times": False, "verbose": False}
+        kw = {
+            "jobs": 2,
+            "quality": 50,
+            "keep": True,
+            "force": False,
+            "metadata": False,
+            "times": False,
+            "verbose": False,
+        }
         kw.update(kwargs)
-        return heic2jpg.run_pool(files, **kw)
+        return heic2jpg.run_pool(files, heic2jpg.plan_outputs(files), **kw)
 
     def test_all_ok(self, heic_dir):
         files = heic2jpg.collect_files(heic_dir)
-        ok, skipped, failed = self._pool(files)
+        ok, skipped, failed, interrupted = self._pool(files)
         assert ok == 3
         assert skipped == 0
         assert failed == 0
+        assert interrupted is False
 
     def test_skip_counted(self, heic_dir):
         files = heic2jpg.collect_files(heic_dir)
         files[0].with_suffix(".jpg").write_bytes(b"x")
-        ok, skipped, _ = self._pool(files)
+        ok, skipped, _, _ = self._pool(files)
         assert skipped == 1
         assert ok == 2
 
     def test_failed_counted(self, tmp_path):
         bad = tmp_path / "bad.heic"
         bad.write_bytes(b"\x00" * 32)
-        _, _, failed = self._pool([bad])
+        _, _, failed, _ = self._pool([bad])
         assert failed == 1
 
     def test_verbose_ok(self, single_heic, capsys):
@@ -571,12 +647,13 @@ class TestRunPool:
         assert "FAIL" in capsys.readouterr().err
 
     def test_empty_list(self):
-        ok, skipped, failed = self._pool([])
+        ok, skipped, failed, interrupted = self._pool([])
         assert ok == skipped == failed == 0
+        assert interrupted is False
 
     def test_stress_20_files(self, tmp_path):
         files = [make_heic(tmp_path / f"img{i:02d}.heic") for i in range(20)]
-        ok, _, failed = self._pool(files, jobs=4)
+        ok, _, failed, _ = self._pool(files, jobs=4)
         assert ok == 20
         assert failed == 0
 
@@ -588,10 +665,17 @@ class TestRunPool:
             raise KeyboardInterrupt
 
         with patch("heic2jpg.heic2jpg.as_completed", side_effect=raise_keyboard_interrupt):
-            ok, skipped, failed = self._pool(files)
+            ok, skipped, failed, interrupted = self._pool(files)
 
         assert ok + skipped + failed == 0
+        assert interrupted is True
         assert "Interrupted" in capsys.readouterr().err
+
+    def test_sigint_handler_restored_after_pool(self, heic_dir):
+        """run_pool must put back whatever SIGINT handler was installed before it ran."""
+        prev = signal.getsignal(signal.SIGINT)
+        self._pool(heic2jpg.collect_files(heic_dir))
+        assert signal.getsignal(signal.SIGINT) is prev
 
     @pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGINT) not supported on Windows")
     def test_sigint_handler_sets_interrupted(self, heic_dir, capsys):

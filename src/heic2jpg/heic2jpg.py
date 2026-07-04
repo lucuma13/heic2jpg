@@ -80,6 +80,29 @@ def _set_creation_time_windows(path: Path, ctime_ns: int) -> None:
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
+    # Declare signatures explicitly. Without a restype, ctypes truncates
+    # CreateFileW's HANDLE return to a signed 32-bit int on 64-bit Windows,
+    # so a failed open (-1) would never compare equal to INVALID_HANDLE_VALUE.
+    kernel32.CreateFileW.argtypes = [
+        ctypes.wintypes.LPCWSTR,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.LPVOID,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+    kernel32.SetFileTime.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+    ]
+    kernel32.SetFileTime.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
     # Convert nanoseconds-since-Unix-epoch → 100-nanosecond intervals
     # since 1601-01-01 (Windows FILETIME). The offset between the two
     # epochs is 116444736000000000 x 100ns ticks.
@@ -197,6 +220,33 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
 # =========================================================================
 
 
+def _restore_timestamps(out: Path, src_stat: os.stat_result) -> None:
+    """Copy the source file's timestamps onto the converted output.
+
+    os.utime takes (atime_ns, mtime_ns) in nanoseconds.
+
+    Creation time (st_birthtime) is read-only on most Linux filesystems
+    — no portable syscall exists to set it. As a workaround we write
+    birthtime into mtime when available (macOS/APFS populates
+    st_birthtime; on Linux it's absent and we fall back to mtime).
+    The real mtime of a HEIC is almost always identical to birthtime
+    anyway (the file is written once, never modified), so this
+    faithfully represents "when the photo was taken" in the output's
+    mtime field — the one timestamp every tool shows.
+
+    Raises OSError on failure (caller catches and warns).
+    """
+    birthtime_ns = getattr(src_stat, "st_birthtime_ns", None)
+    if birthtime_ns is None and hasattr(src_stat, "st_birthtime"):
+        birthtime_ns = int(src_stat.st_birthtime * 1e9)
+    mtime_ns = birthtime_ns if birthtime_ns is not None else src_stat.st_mtime_ns
+    os.utime(out, ns=(src_stat.st_atime_ns, mtime_ns))
+
+    # Windows exposes a writable creation-time field via SetFileTime.
+    # On macOS/Linux this is a no-op.
+    _set_creation_time_windows(out, mtime_ns)
+
+
 def convert_one(  # noqa: PLR0913
     src: Path,
     quality: int,
@@ -204,12 +254,18 @@ def convert_one(  # noqa: PLR0913
     force: bool,
     metadata: bool,
     times: bool,
+    out: Path | None = None,
 ) -> tuple[Path, str, str | None]:
     """Convert exactly one file. Pure function — safe to call from any thread.
 
     This wraps the chosen backend with the cross-cutting concerns:
     skip-if-exists, atomic write, optional original deletion,
     and structured error reporting.
+
+    ``out`` is the destination path; it defaults to ``src`` with a .jpg
+    suffix. main() passes pre-computed unique outputs (see plan_outputs)
+    so that sources differing only in extension case can't clobber each
+    other's output or share a temp file.
 
     Returns
     -------
@@ -222,7 +278,8 @@ def convert_one(  # noqa: PLR0913
         error string on failure. Also used for "ok with warning" cases
         (e.g. converted but couldn't delete the original).
     """
-    out = src.with_suffix(".jpg")
+    if out is None:
+        out = src.with_suffix(".jpg")
 
     # Skip if the destination already exists
     if out.exists() and not force:
@@ -238,10 +295,10 @@ def convert_one(  # noqa: PLR0913
             src_stat = None
 
     # Atomic write: write to a temp file, then rename onto the final name.
-    # Worker threads share the same PID, but each converts a different src,
-    # so each tmp path is distinct — no collision risk between threads.
-    # The PID suffix still guards against two separate heic2jpg processes
-    # running concurrently in the same directory.
+    # `out` is unique per source (main() resolves collisions up front via
+    # plan_outputs), so worker threads never share a tmp path. The PID
+    # suffix guards against two separate heic2jpg processes running
+    # concurrently in the same directory.
     tmp = out.with_suffix(out.suffix + f".tmp.{os.getpid()}")
     warnings: list[str] = []
     try:
@@ -251,31 +308,9 @@ def convert_one(  # noqa: PLR0913
         tmp.replace(out)
 
         # Restore original timestamps onto the output.
-        # os.utime takes (atime_ns, mtime_ns) in nanoseconds.
-        #
-        # Creation time (st_birthtime) is read-only on most Linux filesystems
-        # — no portable syscall exists to set it. As a workaround we write
-        # birthtime into mtime when available (macOS/APFS populates
-        # st_birthtime; on Linux it's absent and we fall back to mtime).
-        # The real mtime of a HEIC is almost always identical to birthtime
-        # anyway (the file is written once, never modified), so this
-        # faithfully represents "when the photo was taken" in the output's
-        # mtime field — the one timestamp every tool shows.
         if times and src_stat is not None:
             try:
-                birthtime_ns = getattr(src_stat, "st_birthtime_ns", None)
-                if birthtime_ns is None and hasattr(src_stat, "st_birthtime"):
-                    birthtime_ns = int(src_stat.st_birthtime * 1e9)
-                # On macOS/Windows st_birthtime is available so we use it
-                # for mtime too (see comment above). On Linux we fall back
-                # to the source mtime.
-                mtime_ns = birthtime_ns if birthtime_ns is not None else src_stat.st_mtime_ns
-                os.utime(out, ns=(src_stat.st_atime_ns, mtime_ns))
-
-                # Windows exposes a writable creation-time field via
-                # SetFileTime. On macOS/Linux this is a no-op.
-                ctime_ns = birthtime_ns if birthtime_ns is not None else src_stat.st_mtime_ns
-                _set_creation_time_windows(out, ctime_ns)
+                _restore_timestamps(out, src_stat)
             except OSError as e:
                 warnings.append(f"warning: could not restore timestamps: {e}")
 
@@ -292,12 +327,14 @@ def convert_one(  # noqa: PLR0913
         return src, "ok", warning_str
 
     except Exception as e:  # noqa: BLE001 — any conversion failure becomes status="fail"
-        # Clean up the partial temp file before reporting the error.
-        # Without this, repeated failed runs would litter the directory
-        # with .tmp.PID files.
+        return src, "fail", f"{type(e).__name__}: {e}"
+    finally:
+        # Clean up the partial temp file on every failure path — including
+        # KeyboardInterrupt, which must propagate but not litter the
+        # directory with .tmp.PID files. After success the rename already
+        # consumed the temp file, so the unlink is a suppressed no-op.
         with contextlib.suppress(OSError):
             tmp.unlink()
-        return src, "fail", f"{type(e).__name__}: {e}"
 
 
 # =========================================================================
@@ -327,6 +364,31 @@ def collect_files(root: Path, recursive: bool = False) -> list[Path]:
     if recursive:
         return sorted(f for f in root.rglob("*") if f.is_file() and f.suffix.lower() == ".heic")
     return sorted(f for f in root.iterdir() if f.is_file() and f.suffix.lower() == ".heic")
+
+
+def plan_outputs(files: list[Path]) -> list[Path]:
+    """Map each source file to a unique .jpg output path.
+
+    On case-sensitive filesystems two sources can collide on the same
+    output (``IMG.heic`` and ``IMG.HEIC`` both → ``IMG.jpg``). Without
+    this step they would also share a temp file and, with the default
+    delete-originals behaviour, one photo would be silently lost. Later
+    claimants get a numeric suffix: ``IMG-1.jpg``, ``IMG-2.jpg``, …
+
+    Pure path arithmetic — does not touch the filesystem. Deterministic
+    for a given input order (collect_files returns sorted paths).
+    """
+    claimed: set[Path] = set()
+    outs: list[Path] = []
+    for src in files:
+        out = src.with_suffix(".jpg")
+        n = 0
+        while out in claimed:
+            n += 1
+            out = src.with_name(f"{src.stem}-{n}.jpg")
+        claimed.add(out)
+        outs.append(out)
+    return outs
 
 
 # =========================================================================
@@ -360,32 +422,35 @@ def _tally(  # noqa: PLR0913
 
 def run_pool(  # noqa: PLR0913
     files: list[Path],
+    outs: list[Path],
     jobs: int,
-    q: int,
+    quality: int,
     keep: bool,
     force: bool,
     metadata: bool,
     times: bool,
     verbose: bool,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, bool]:
     """Run all conversions through a thread pool.
 
     Parameters
     ----------
     files : list of Path to convert
+    outs : output path for each file (same order; see plan_outputs)
     jobs : int worker count
-    q, keep, force, metadata, times, verbose : forwarded to convert_one
+    quality, keep, force, metadata, times, verbose : forwarded to convert_one
 
     Returns
     -------
-    Tuple of ``(ok_count, skipped_count, failed_count)``.
+    Tuple of ``(ok_count, skipped_count, failed_count, interrupted)``.
 
     Signal handling
     ---------------
     Installs a SIGINT handler so the first Ctrl-C cancels pending work
     and lets in-flight conversions finish cleanly (preserving their
     atomic-write guarantee). A second Ctrl-C bypasses the handler and
-    kills the process immediately.
+    kills the process immediately. The previous handler is restored
+    before returning.
     """
     ok = skipped = failed = 0
     interrupted = False
@@ -399,40 +464,51 @@ def run_pool(  # noqa: PLR0913
 
     # `hasattr` guard: SIGINT is universal, but being defensive for any
     # weird embedded Python environment costs nothing.
+    prev_handler = None
     if hasattr(signal, "SIGINT"):
+        prev_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _handle_sigint)
 
-    # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly
-    # even if an exception escapes the loop. Without the context manager,
-    # Python would leak worker threads.
-    with ThreadPoolExecutor(max_workers=jobs) as ex:
-        # Submit everything up front. The pool internally queues anything
-        # over `max_workers` and spawns them as workers free up.
-        futures: dict[Future, Path] = {ex.submit(convert_one, f, q, keep, force, metadata, times): f for f in files}
-        try:
-            # `as_completed` yields futures as they finish, NOT in
-            # submission order. This means progress feels smooth even if
-            # one file is much slower than the rest.
-            for fut in as_completed(futures):
-                if interrupted:
-                    # Cancel anything still queued (won't affect futures
-                    # that are already running — those finish naturally).
-                    for pending in futures:
-                        pending.cancel()
-                    break
+    try:
+        # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly
+        # even if an exception escapes the loop. Without the context manager,
+        # Python would leak worker threads.
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            # Submit everything up front. The pool internally queues anything
+            # over `max_workers` and spawns them as workers free up.
+            futures: dict[Future, Path] = {
+                ex.submit(convert_one, f, quality, keep, force, metadata, times, out): f
+                for f, out in zip(files, outs, strict=True)
+            }
+            try:
+                # `as_completed` yields futures as they finish, NOT in
+                # submission order. This means progress feels smooth even if
+                # one file is much slower than the rest.
+                for fut in as_completed(futures):
+                    if interrupted:
+                        # Cancel anything still queued (won't affect futures
+                        # that are already running — those finish naturally).
+                        for pending in futures:
+                            pending.cancel()
+                        break
 
-                src, status, err = fut.result()
-                ok, skipped, failed = _tally(ok, skipped, failed, src, status, err, verbose)
-        except KeyboardInterrupt:
-            # Belt-and-braces: handles the case where SIGINT arrives
-            # between `as_completed` calls and our handler hasn't run.
-            interrupted = True
-            for pending in futures:
-                pending.cancel()
+                    src, status, err = fut.result()
+                    ok, skipped, failed = _tally(ok, skipped, failed, src, status, err, verbose)
+            except KeyboardInterrupt:
+                # Belt-and-braces: handles the case where SIGINT arrives
+                # between `as_completed` calls and our handler hasn't run.
+                interrupted = True
+                for pending in futures:
+                    pending.cancel()
+    finally:
+        # Don't leave our handler installed after the pool is done —
+        # callers embedding run_pool expect their own handler back.
+        if prev_handler is not None:
+            signal.signal(signal.SIGINT, prev_handler)
 
     if interrupted:
         print("Interrupted.", file=sys.stderr)
-    return ok, skipped, failed
+    return ok, skipped, failed, interrupted
 
 
 # =========================================================================
@@ -463,8 +539,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911
-    """Entry point. Returns the process exit code (see module docstring)."""
+def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911, PLR0912
+    """Entry point.
+
+    Returns the process exit code:
+      0   — success (everything converted or skipped)
+      1   — bad arguments or unusable environment (codec missing, bad path)
+      2   — no HEIC files found
+      3   — at least one conversion failed
+      130 — interrupted by Ctrl-C
+    """
     args = parse_args(argv)
 
     # --- Validate args -----------------------------------------------------
@@ -500,9 +584,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911
         print(f"No HEIC files found in: {src}", file=sys.stderr)
         return 2
 
+    # Resolve output-name collisions (e.g. IMG.heic vs IMG.HEIC) up front.
+    outs = plan_outputs(files)
+
     # No point spawning more workers than there are files.
-    # Consider capping at 8 workers, beyond that the I/O bottleneck dominates
-    # and you get diminishing returns.
     cpu_count = os.cpu_count() or 4
     jobs = min(cpu_count, len(files))
 
@@ -524,19 +609,28 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911
         # debugging: stack traces don't get re-raised across worker
         # boundaries.
         ok = skipped = failed = 0
-        for f in files:
-            src, status, err = convert_one(
-                f,
-                args.quality,
-                args.keep,
-                args.force,
-                args.metadata,
-                args.times,
-            )
-            ok, skipped, failed = _tally(ok, skipped, failed, src, status, err, args.verbose)
+        interrupted = False
+        try:
+            for f, out in zip(files, outs, strict=True):
+                path, status, err = convert_one(
+                    f,
+                    args.quality,
+                    args.keep,
+                    args.force,
+                    args.metadata,
+                    args.times,
+                    out,
+                )
+                ok, skipped, failed = _tally(ok, skipped, failed, path, status, err, args.verbose)
+        except KeyboardInterrupt:
+            # convert_one has already cleaned up its temp file; mirror the
+            # pool path's graceful message instead of dumping a traceback.
+            interrupted = True
+            print("Interrupted.", file=sys.stderr)
     else:
-        ok, skipped, failed = run_pool(
+        ok, skipped, failed, interrupted = run_pool(
             files,
+            outs,
             jobs,
             args.quality,
             args.keep,
@@ -551,6 +645,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901, PLR0911
     if args.verbose or failed:
         print(f"Done in {dt:.2f}s — ok={ok} skipped={skipped} failed={failed}", file=sys.stderr)
 
+    if interrupted:
+        return 130
     return 3 if failed else 0
 
 
