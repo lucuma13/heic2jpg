@@ -7,7 +7,8 @@
 [![CI](https://github.com/lucuma13/heic2jpg/actions/workflows/ci.yml/badge.svg)](https://github.com/lucuma13/heic2jpg/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/lucuma13/heic2jpg/graph/badge.svg?token=X3YA4CA9E3)](https://codecov.io/gh/lucuma13/heic2jpg)
 
-`heic2jpg` is a fast HEIC to JPEG converter designed to resolve the compatibility gap between iPhone image files and common desktop workflows. Conversion runs in parallel across worker threads using [pillow-heif](https://pypi.org/project/pillow-heif/) for fast, in-process decoding in macOS, Linux or Windows.
+`heic2jpg` is a fast HEIC to JPEG converter designed to resolve the compatibility gap between iPhone image files and common desktop workflows. Conversion runs in parallel across worker threads using [pillow-heif](https://pypi.org/project/pillow-heif) for fast, in-process decoding.
+
 
 ### 🚀 Installation
 
