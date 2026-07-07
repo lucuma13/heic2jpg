@@ -37,6 +37,7 @@ classifiers = [
   "Topic :: Utilities",
 ]
 dependencies = [
+  "packaging>=26.2",
   "pillow>=12.3",
   "pillow-heif>=1.4",
 ]
