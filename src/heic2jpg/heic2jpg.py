@@ -47,6 +47,8 @@ from pathlib import Path
 import pillow_heif
 from PIL import Image, ImageOps
 
+from heic2jpg.update_checker import UpdateNotifier
+
 # -----------------------------------------------------------------------------
 # Version
 # -----------------------------------------------------------------------------
@@ -542,6 +544,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     """
     args = parse_args(argv)
 
+    # Kick off the PyPI update check now so the network round-trip overlaps
+    # with the conversion work; the hint (if any) is printed at the end.
+    notifier = UpdateNotifier("heic2jpg", __version__)
+    notifier.start()
+
     # --- Validate args -----------------------------------------------------
     if not (1 <= args.quality <= 100):  # noqa: PLR2004 — quality is 1-100%
         print("Error: quality must be 1-100", file=sys.stderr)
@@ -610,6 +617,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
 
     if interrupted:
         return 130
+
+    # Only after a completed run — error exits and Ctrl-C shouldn't nag.
+    notifier.notify()
     return 3 if failed else 0
 
 
