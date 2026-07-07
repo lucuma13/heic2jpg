@@ -158,6 +158,7 @@ name = "heic2jpg"
 version = "2.2.1"
 source = { editable = "." }
 dependencies = [
+    { name = "packaging" },
     { name = "pillow" },
     { name = "pillow-heif" },
 ]
@@ -176,6 +177,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.3" },
     { name = "pillow-heif", specifier = ">=1.4" },
 ]
