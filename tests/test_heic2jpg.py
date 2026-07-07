@@ -720,11 +720,16 @@ class TestHelpers:
 # ===========================================================================
 
 
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
 class TestFuzzCorruptPayloads:
     """
     Property: convert_one must NEVER raise an unhandled exception, regardless
     of what bytes are in the source file.  It may return Status.FAIL, but it
     must return a well-formed Result.
+
+    Corrupt bytes can produce a header declaring a huge pixel count, which
+    trips Pillow's DecompressionBombWarning — expected noise here, so it's
+    filtered.
     """
 
     @given(payload=strategies.binary(min_size=0, max_size=4096))
@@ -783,12 +788,16 @@ class TestFuzzCorruptPayloads:
 # ===========================================================================
 
 
+@pytest.mark.filterwarnings("ignore::PIL.Image.DecompressionBombWarning")
 class TestFuzzBitFlips:
     """
     Start from a real HEIC file and flip one byte at a random position.
     The converter must still return without raising (corrupted files should
     produce a fail status from convert_one, not an unhandled exception from
     convert_with_pillow propagating all the way up).
+
+    A flipped dimension byte can inflate the declared pixel count, tripping
+    Pillow's DecompressionBombWarning — expected noise here, so it's filtered.
     """
 
     @given(
@@ -977,15 +986,6 @@ class TestSetCreationTimeWindows:
         with pytest.raises(OSError, match="SetFileTime failed"):
             heic2jpg._set_creation_time_windows(f, 0)
 
-    @given(ctime_ns=strategies.integers())
-    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
-    @pytest.mark.skipif(sys.platform == "win32", reason="non-Windows no-op path")
-    def test_noop_on_non_windows_never_raises(self, tmp_path, ctime_ns):
-        """Any integer timestamp — positive, negative, or zero — is a no-op on non-Windows."""
-        f = tmp_path / "dummy.txt"
-        f.write_bytes(b"x")
-        assert heic2jpg._set_creation_time_windows(f, ctime_ns) is None
-
     @given(ctime_ns=strategies.integers(min_value=0, max_value=2**63 - 1))
     @settings(max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows mocked path")
@@ -1002,6 +1002,15 @@ class TestSetCreationTimeWindows:
         with patch("ctypes.WinDLL", return_value=mock_kernel):
             heic2jpg._set_creation_time_windows(f, ctime_ns)
         mock_kernel.CloseHandle.assert_called_once_with(999)
+
+    @given(ctime_ns=strategies.integers())
+    @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @pytest.mark.skipif(sys.platform == "win32", reason="non-Windows no-op path")
+    def test_noop_on_non_windows_never_raises(self, tmp_path, ctime_ns):
+        """Any integer timestamp — positive, negative, or zero — is a no-op on non-Windows."""
+        f = tmp_path / "dummy.txt"
+        f.write_bytes(b"x")
+        assert heic2jpg._set_creation_time_windows(f, ctime_ns) is None
 
 
 # ===========================================================================
