@@ -8,6 +8,7 @@ import time
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from packaging.version import Version
@@ -306,3 +307,76 @@ def test_detect_upgrade_command_path_beats_pyvenv_cfg(tmp_path):
     (prefix / "pyvenv.cfg").write_text("uv = 0.7.2\n")
     module_path = prefix / "lib" / "python3.14" / "site-packages" / PACKAGE / "update_checker.py"
     assert _detect_upgrade_command(PACKAGE, module_path, sys_prefix=str(prefix)) == f"uv tool upgrade {PACKAGE}"
+
+
+def test_detect_upgrade_command_unresolvable_path_falls_back(tmp_path):
+    """A frozen/odd interpreter where resolve() raises must not crash — with no
+    readable pyvenv.cfg it lands on the default recommendation."""
+    bad = MagicMock()
+    bad.resolve.side_effect = OSError("frozen interpreter")
+    assert _detect_upgrade_command(PACKAGE, bad, sys_prefix=str(tmp_path)) == f"uv tool upgrade {PACKAGE}"
+
+
+# ===========================================================================
+# Cache directory conventions
+# ===========================================================================
+
+
+class TestDefaultCacheDir:
+    def test_darwin(self, monkeypatch):
+        monkeypatch.setattr(update_checker.sys, "platform", "darwin")
+        assert update_checker._default_cache_dir() == Path.home() / "Library" / "Caches"
+
+    def test_win32_uses_localappdata(self, monkeypatch):
+        monkeypatch.setattr(update_checker.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(Path("/c/Users/u/AppData/Local")))
+        assert update_checker._default_cache_dir() == Path("/c/Users/u/AppData/Local")
+
+    def test_win32_without_localappdata(self, monkeypatch):
+        monkeypatch.setattr(update_checker.sys, "platform", "win32")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        assert update_checker._default_cache_dir() == Path.home() / "AppData" / "Local"
+
+    def test_linux_uses_xdg_cache_home(self, monkeypatch):
+        monkeypatch.setattr(update_checker.sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(Path("/custom/cache")))
+        assert update_checker._default_cache_dir() == Path("/custom/cache")
+
+    def test_linux_without_xdg_falls_back_to_dot_cache(self, monkeypatch):
+        monkeypatch.setattr(update_checker.sys, "platform", "linux")
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        assert update_checker._default_cache_dir() == Path.home() / ".cache"
+
+
+# ===========================================================================
+# Never breaks the host CLI — "stay quiet" guarantees
+# ===========================================================================
+
+
+class _BoomStderr:
+    """A stderr whose isatty() blows up — models a closed/replaced stream."""
+
+    def isatty(self):
+        raise ValueError("I/O operation on closed file")
+
+
+def test_stderr_is_interactive_false_when_isatty_raises(monkeypatch):
+    monkeypatch.setattr(update_checker.sys, "stderr", _BoomStderr())
+    assert update_checker._stderr_is_interactive() is False
+
+
+def test_stderr_supports_color_false_when_isatty_raises(monkeypatch):
+    monkeypatch.setattr(update_checker.sys, "stderr", _BoomStderr())
+    assert update_checker._stderr_supports_color() is False
+
+
+def test_write_cache_failure_is_silent(enabled_env, monkeypatch, tmp_path):
+    """A read-only cache dir must not raise — caching is best-effort."""
+
+    def boom(*args, **kwargs):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(update_checker.Path, "mkdir", boom)
+    notifier = UpdateNotifier(PACKAGE, "1.0", cache_dir=tmp_path)
+    notifier._write_cache("2.0")  # must not raise
+    assert not notifier._cache_path.exists()

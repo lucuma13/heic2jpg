@@ -1096,6 +1096,66 @@ class TestSetCreationTimeWindows:
         assert heic2jpg._set_creation_time_windows(f, ctime_ns) is None
 
 
+class TestSetCreationTimeWindowsFakedWin32:
+    """Exercise the Windows body on every platform by faking win32: patch
+    sys.platform and stub ctypes.WinDLL (which doesn't exist off Windows, hence
+    create=True). This reaches the epoch arithmetic, FILETIME packing, and error
+    paths that the skipif(Windows-only) tests never run on a non-Windows host."""
+
+    def _fake_kernel(self, mocker, *, handle=999, setfiletime=1):
+        kernel = MagicMock()
+        kernel.CreateFileW.return_value = handle
+        kernel.SetFileTime.return_value = setfiletime
+        mocker.patch("heic2jpg.heic2jpg.sys.platform", "win32")
+        mocker.patch("ctypes.WinDLL", return_value=kernel, create=True)
+        # get_last_error is Windows-only; the error paths call it after a failure.
+        mocker.patch("ctypes.get_last_error", return_value=5, create=True)
+        return kernel
+
+    def test_success_sets_time_and_closes_handle(self, tmp_path, mocker):
+        kernel = self._fake_kernel(mocker)
+        f = tmp_path / "x.txt"
+        f.write_bytes(b"y")
+        heic2jpg._set_creation_time_windows(f, int(time.time() * 1e9))
+        kernel.SetFileTime.assert_called_once()
+        kernel.CloseHandle.assert_called_once_with(999)
+
+    def test_invalid_handle_raises_before_open_handle(self, tmp_path, mocker):
+        invalid = ctypes.wintypes.HANDLE(-1).value
+        kernel = self._fake_kernel(mocker, handle=invalid)
+        f = tmp_path / "x.txt"
+        f.write_bytes(b"y")
+        with pytest.raises(OSError, match="CreateFileW failed"):
+            heic2jpg._set_creation_time_windows(f, 0)
+        # We never got a valid handle, so nothing to close.
+        kernel.CloseHandle.assert_not_called()
+
+    def test_setfiletime_failure_raises_but_still_closes(self, tmp_path, mocker):
+        kernel = self._fake_kernel(mocker, setfiletime=0)
+        f = tmp_path / "x.txt"
+        f.write_bytes(b"y")
+        with pytest.raises(OSError, match="SetFileTime failed"):
+            heic2jpg._set_creation_time_windows(f, 0)
+        # finally-clause closes the handle even on failure.
+        kernel.CloseHandle.assert_called_once_with(999)
+
+    @given(ctime_ns=strategies.integers(min_value=0, max_value=2**63 - 1))
+    @settings(max_examples=200, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    def test_epoch_arithmetic_never_raises(self, tmp_path, ctime_ns):
+        """Any nanosecond timestamp must pack into a FILETIME without overflow."""
+        kernel = MagicMock()
+        kernel.CreateFileW.return_value = 999
+        kernel.SetFileTime.return_value = 1
+        f = tmp_path / "dummy.txt"
+        f.write_bytes(b"x")
+        with (
+            patch("heic2jpg.heic2jpg.sys.platform", "win32"),
+            patch("ctypes.WinDLL", return_value=kernel, create=True),
+        ):
+            heic2jpg._set_creation_time_windows(f, ctime_ns)
+        kernel.CloseHandle.assert_called_once_with(999)
+
+
 # ===========================================================================
 # Arbitrary CLI argument lists  →  parse_args robustness
 # ===========================================================================
