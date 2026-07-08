@@ -199,6 +199,7 @@ class Options:
     metadata: bool = False
     times: bool = False
 
+
 class Status(Enum):
     """Outcome of converting a single file."""
 

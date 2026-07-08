@@ -289,18 +289,14 @@ def test_detect_upgrade_command_uv_venv(tmp_path):
     (tmp_path / "pyvenv.cfg").write_text("home = /usr/local/bin\nuv = 0.7.2\nversion_info = 3.14.0\n")
     module_path = tmp_path / "lib" / "python3.14" / "site-packages" / PACKAGE / "update_checker.py"
     assert (
-        _detect_upgrade_command(PACKAGE, module_path, sys_prefix=str(tmp_path))
-        == f"uv pip install --upgrade {PACKAGE}"
+        _detect_upgrade_command(PACKAGE, module_path, sys_prefix=str(tmp_path)) == f"uv pip install --upgrade {PACKAGE}"
     )
 
 
 def test_detect_upgrade_command_plain_venv(tmp_path):
     (tmp_path / "pyvenv.cfg").write_text("home = /usr/local/bin\nversion = 3.14.0\n")
     module_path = tmp_path / "lib" / "python3.14" / "site-packages" / PACKAGE / "update_checker.py"
-    assert (
-        _detect_upgrade_command(PACKAGE, module_path, sys_prefix=str(tmp_path))
-        == f"pip install --upgrade {PACKAGE}"
-    )
+    assert _detect_upgrade_command(PACKAGE, module_path, sys_prefix=str(tmp_path)) == f"pip install --upgrade {PACKAGE}"
 
 
 def test_detect_upgrade_command_path_beats_pyvenv_cfg(tmp_path):
