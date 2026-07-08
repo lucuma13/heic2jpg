@@ -143,7 +143,8 @@ class TestCollectFiles:
 
 
 class TestPlanOutputs:
-    """plan_outputs is pure path arithmetic, so no files are needed."""
+    """Batch-collision cases use fake /x paths (nothing exists there);
+    disk-diversion cases create real files in tmp_path."""
 
     def test_empty(self):
         assert heic2jpg.plan_outputs([]) == []
@@ -173,6 +174,26 @@ class TestPlanOutputs:
         outs = heic2jpg.plan_outputs(files)
         assert len(set(outs)) == len(files)
 
+    def test_diverts_around_existing_file(self, tmp_path):
+        (tmp_path / "IMG.jpg").write_bytes(b"bystander")
+        assert heic2jpg.plan_outputs([tmp_path / "IMG.heic"]) == [tmp_path / "IMG-1.jpg"]
+
+    def test_diverts_past_existing_suffixed_file(self, tmp_path):
+        (tmp_path / "IMG.jpg").write_bytes(b"bystander")
+        (tmp_path / "IMG-1.jpg").write_bytes(b"also taken")
+        assert heic2jpg.plan_outputs([tmp_path / "IMG.heic"]) == [tmp_path / "IMG-2.jpg"]
+
+    def test_force_reclaims_natural_name_only(self, tmp_path):
+        """-f overwrites IMG.heic's own IMG.jpg, but an existing IMG-1.jpg
+        may be an unrelated photo and is still diverted around."""
+        (tmp_path / "IMG.jpg").write_bytes(b"mine")
+        (tmp_path / "IMG-1.jpg").write_bytes(b"bystander")
+        files = [tmp_path / "IMG.heic", tmp_path / "IMG.HEIC"]
+        assert heic2jpg.plan_outputs(files, force=True) == [
+            tmp_path / "IMG.jpg",
+            tmp_path / "IMG-2.jpg",
+        ]
+
 
 # ===========================================================================
 # convert_with_pillow
@@ -181,14 +202,17 @@ class TestPlanOutputs:
 
 class TestConvertWithPillow:
     def _mock_image(self, info=None, mode="RGB"):
-        """Return a (mock_img, transposed) pair wired up for Image.open context."""
+        """Return a (mock_img, transposed) pair wired up for Image.open context.
+
+        EXIF is read off the exif_transpose result (its Orientation tag is
+        already stripped there), so ``info`` lands on the transposed mock.
+        """
         mock_img = MagicMock()
         mock_img.__enter__ = MagicMock(return_value=mock_img)
         mock_img.__exit__ = MagicMock(return_value=False)
-        mock_img.info = info if info is not None else {}
-        mock_img.mode = mode
         transposed = MagicMock()
-        transposed.mode = "RGB"
+        transposed.info = info if info is not None else {}
+        transposed.mode = mode
         transposed.save = MagicMock()
         return mock_img, transposed
 
@@ -225,7 +249,7 @@ class TestConvertWithPillow:
             assert src_im.size == out_im.size
 
     def test_metadata_true_embeds_exif(self, tmp_path):
-        """When im.info['exif'] is present it must be forwarded to save()."""
+        """The transposed image's info['exif'] must be forwarded to save()."""
         fake_exif = b"Exif\x00\x00" + b"II" + struct.pack("<H", 42) + struct.pack("<I", 8) + struct.pack("<H", 0)
         mock_img, transposed = self._mock_image(info={"exif": fake_exif})
         with (
@@ -236,10 +260,10 @@ class TestConvertWithPillow:
         assert transposed.save.call_args[1]["exif"] == fake_exif
 
     def test_metadata_true_getexif_fallback(self, tmp_path):
-        """When im.info has no 'exif', fall back to im.getexif().tobytes()."""
+        """When info has no 'exif', fall back to the transposed getexif().tobytes()."""
         fake_exif = b"Exif\x00\x00II"
         mock_img, transposed = self._mock_image()
-        mock_img.getexif.return_value.tobytes.return_value = fake_exif
+        transposed.getexif.return_value.tobytes.return_value = fake_exif
         with (
             patch("heic2jpg.heic2jpg.Image.open", return_value=mock_img),
             patch("heic2jpg.heic2jpg.ImageOps.exif_transpose", return_value=transposed),
@@ -250,7 +274,7 @@ class TestConvertWithPillow:
     def test_metadata_getexif_exception_skipped(self, tmp_path):
         """If getexif().tobytes() raises, exif is silently skipped."""
         mock_img, transposed = self._mock_image()
-        mock_img.getexif.return_value.tobytes.side_effect = RuntimeError("no exif")
+        transposed.getexif.return_value.tobytes.side_effect = RuntimeError("no exif")
         with (
             patch("heic2jpg.heic2jpg.Image.open", return_value=mock_img),
             patch("heic2jpg.heic2jpg.ImageOps.exif_transpose", return_value=transposed),
@@ -296,6 +320,15 @@ class TestConvertOne:
         res = self._call(single_heic, force=True)
         assert res.status is heic2jpg.Status.OK
         assert is_valid_jpeg(single_heic.with_suffix(".jpg"))
+
+    def test_force_never_overwrites_diverted_name(self, single_heic):
+        """force consents to overwriting the natural name only; a diverted
+        output that appeared after planning is skipped, not clobbered."""
+        out = single_heic.with_name("single-1.jpg")
+        out.write_bytes(b"bystander")
+        res = self._call(single_heic, out=out, force=True)
+        assert res.status is heic2jpg.Status.SKIP
+        assert out.read_bytes() == b"bystander"
 
     def test_keep_false_deletes_original(self, single_heic):
         self._call(single_heic, keep=False)
@@ -542,11 +575,17 @@ class TestMain:
         heic2jpg.main(["-v", "-k", str(single_heic)])
         assert "Done" in capsys.readouterr().err
 
-    def test_skip_without_force(self, single_heic):
+    def test_existing_jpg_diverts_instead_of_skipping(self, single_heic, capsys):
+        """The taken name is preserved, the HEIC still converts (to a
+        numbered variant), and the diversion is announced without -v."""
         jpg = single_heic.with_suffix(".jpg")
         jpg.write_bytes(b"original")
-        heic2jpg.main(["-k", str(single_heic)])
+        assert heic2jpg.main(["-k", str(single_heic)]) == 0
         assert jpg.read_bytes() == b"original"
+        assert is_valid_jpeg(single_heic.with_name("single-1.jpg"))
+        err = capsys.readouterr().err
+        assert "warning" in err
+        assert "single-1.jpg" in err
 
     def test_force_overwrites(self, single_heic):
         single_heic.with_suffix(".jpg").write_bytes(b"stale")
@@ -607,12 +646,24 @@ class TestRunPool:
         assert failed == 0
         assert interrupted is False
 
-    def test_skip_counted(self, heic_dir):
+    def test_existing_output_diverts_and_converts(self, heic_dir):
         files = heic2jpg.collect_files(heic_dir)
-        files[0].with_suffix(".jpg").write_bytes(b"x")
+        blocked = files[0].with_suffix(".jpg")
+        blocked.write_bytes(b"x")
         ok, skipped, _, _ = self._pool(files)
-        assert skipped == 1
-        assert ok == 2
+        assert ok == 3
+        assert skipped == 0
+        assert blocked.read_bytes() == b"x"
+        assert is_valid_jpeg(files[0].with_name(f"{files[0].stem}-1.jpg"))
+
+    def test_skip_counted_when_output_appears_after_planning(self, single_heic):
+        """convert_one's exists() backstop: outs planned before the file
+        existed still yield SKIP rather than an overwrite."""
+        out = single_heic.with_suffix(".jpg")
+        out.write_bytes(b"x")
+        opts = heic2jpg.Options(keep=True)
+        ok, skipped, failed, _ = heic2jpg.run_pool([single_heic], [out], 1, opts, verbose=False)
+        assert (ok, skipped, failed) == (0, 1, 0)
 
     def test_failed_counted(self, tmp_path):
         bad = tmp_path / "bad.heic"
@@ -624,9 +675,19 @@ class TestRunPool:
         self._pool([single_heic], verbose=True)
         assert "ok:" in capsys.readouterr().err
 
+    def test_warning_printed_without_verbose(self, single_heic, mocker, capsys):
+        """Non-fatal warnings (e.g. undeletable original) surface without -v."""
+        mocker.patch("heic2jpg.heic2jpg.Path.unlink", side_effect=PermissionError("locked"))
+        self._pool([single_heic], verbose=False, keep=False)
+        err = capsys.readouterr().err
+        assert "warning:" in err
+        assert "could not delete" in err
+
     def test_verbose_skip(self, single_heic, capsys):
-        single_heic.with_suffix(".jpg").write_bytes(b"x")
-        self._pool([single_heic], verbose=True, force=False)
+        """Explicit outs bypass plan_outputs' diversion to hit the skip branch."""
+        out = single_heic.with_suffix(".jpg")
+        out.write_bytes(b"x")
+        heic2jpg.run_pool([single_heic], [out], 1, heic2jpg.Options(keep=True), verbose=True)
         assert "skip:" in capsys.readouterr().err
 
     def test_failure_always_printed(self, tmp_path, capsys):
@@ -647,7 +708,9 @@ class TestRunPool:
         assert failed == 0
 
     def test_keyboard_interrupt_cancels_pool(self, heic_dir, capsys):
-        """KeyboardInterrupt inside as_completed triggers cancel and prints 'Interrupted.'"""
+        """KeyboardInterrupt inside as_completed cancels the queue, prints
+        'Interrupted.', and the counts still reflect conversions that finished
+        during the shutdown drain (the summary must match the disk)."""
         files = heic2jpg.collect_files(heic_dir)
 
         def raise_keyboard_interrupt(fs):
@@ -656,8 +719,9 @@ class TestRunPool:
         with patch("heic2jpg.heic2jpg.as_completed", side_effect=raise_keyboard_interrupt):
             ok, skipped, failed, interrupted = self._pool(files)
 
-        assert ok + skipped + failed == 0
         assert interrupted is True
+        assert ok == len(list(heic_dir.glob("*.jpg")))
+        assert skipped == failed == 0
         assert "Interrupted" in capsys.readouterr().err
 
     def test_sigint_handler_untouched_by_pool(self, heic_dir):

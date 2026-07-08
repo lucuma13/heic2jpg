@@ -35,6 +35,7 @@ import importlib.metadata
 import os
 import sys
 import time
+from collections import Counter
 from concurrent.futures import (
     Future,
     ThreadPoolExecutor,
@@ -183,20 +184,13 @@ def _try_pillow_heif() -> bool:
 # =========================================================================
 
 
-class Status(Enum):
-    """Outcome of converting a single file."""
-
-    OK = "ok"
-    SKIP = "skip"  # output already existed and -f wasn't set
-    FAIL = "fail"
-
-
 @dataclass(frozen=True)
 class Options:
     """Conversion settings shared by every file in a run.
 
-    Defaults mirror the CLI defaults (see parse_args). Frozen so a single
-    instance can be shared safely across worker threads.
+    These are also the CLI defaults — parse_args reads them, so they live in
+    one place. Frozen so a single instance can be shared safely across
+    worker threads.
     """
 
     quality: int = 30
@@ -204,6 +198,13 @@ class Options:
     force: bool = False
     metadata: bool = False
     times: bool = False
+
+class Status(Enum):
+    """Outcome of converting a single file."""
+
+    OK = "ok"
+    SKIP = "skip"  # output already existed and -f wasn't set
+    FAIL = "fail"
 
 
 @dataclass
@@ -232,23 +233,24 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
     """
     Convert HEIC to JPEG using Pillow + pillow-heif.
 
-    metadata=True → grab the raw EXIF bytes from the source image and
-                    embed them verbatim in the JPEG. Without this flag
-                    only the rotation baked in by exif_transpose is kept
-                    and the EXIF block is dropped.
+    metadata=True → embed the source's EXIF bytes in the JPEG. Without
+                    this flag only the rotation baked in by exif_transpose
+                    is kept and the EXIF block is dropped.
     """
     with Image.open(src) as im:
         # Bake in EXIF rotation and convert to RGB (remove transparency).
-        # exif_transpose returns a *new* image, so we need to grab the
-        # EXIF data before it may be transformed away, if we want to keep it.
+        rgb = ImageOps.exif_transpose(im)
+
+        # Take EXIF from the transposed image: exif_transpose strips the
+        # Orientation tag from its result, so whatever we embed can never
+        # rotate the already-rotated pixels a second time. (When nothing
+        # needed transposing, the copy carries the source EXIF unchanged.)
         exif_bytes: bytes | None = None
         if metadata:
-            exif_bytes = im.info.get("exif")
+            exif_bytes = rgb.info.get("exif")
             if exif_bytes is None:
                 with contextlib.suppress(Exception):  # getexif absent on some Pillow builds
-                    exif_bytes = im.getexif().tobytes() or None
-
-        rgb = ImageOps.exif_transpose(im)
+                    exif_bytes = rgb.getexif().tobytes() or None
 
         if rgb.mode != "RGB":
             rgb = rgb.convert("RGB")
@@ -310,11 +312,15 @@ def convert_one(src: Path, opts: Options, out: Path | None = None) -> Result:
     so that sources differing only in extension case can't clobber each
     other's output or share a temp file.
     """
+    natural = src.with_suffix(".jpg")
     if out is None:
-        out = src.with_suffix(".jpg")
+        out = natural
 
-    # Skip if the destination already exists
-    if out.exists() and not opts.force:
+    # Skip if the destination already exists. plan_outputs normally
+    # diverts around existing files, so this only fires when one appeared
+    # after planning — or on direct API calls. ``force`` consents to
+    # overwriting a source's own natural name, never a diverted one.
+    if out.exists() and not (opts.force and out == natural):
         return Result(src, Status.SKIP)
 
     # Snapshot timestamps before we touch anything so we can restore them
@@ -392,29 +398,35 @@ def collect_files(root: Path, recursive: bool = False) -> list[Path]:
         return [root] if root.suffix.lower() == ".heic" else []
     if not root.is_dir():
         return []
-    if recursive:
-        return sorted(f for f in root.rglob("*") if f.is_file() and f.suffix.lower() == ".heic")
-    return sorted(f for f in root.iterdir() if f.is_file() and f.suffix.lower() == ".heic")
+    entries = root.rglob("*") if recursive else root.iterdir()
+    return sorted(f for f in entries if f.is_file() and f.suffix.lower() == ".heic")
 
 
-def plan_outputs(files: list[Path]) -> list[Path]:
-    """Map each source file to a unique .jpg output path.
+def plan_outputs(files: list[Path], force: bool = False) -> list[Path]:
+    """Map each source file to a free, unique .jpg output path.
 
-    On case-sensitive filesystems two sources can collide on the same
-    output (``IMG.heic`` and ``IMG.HEIC`` both → ``IMG.jpg``). Without
-    this step they would also share a temp file and, with the default
-    delete-originals behaviour, one photo would be silently lost. Later
-    claimants get a numeric suffix: ``IMG-1.jpg``, ``IMG-2.jpg``, …
+    Every source gets converted — a taken output name never causes a
+    skip or an overwrite. A name is taken when another source in this
+    batch already claimed it (``IMG.heic`` and ``IMG.HEIC`` both →
+    ``IMG.jpg`` on case-sensitive filesystems) or when a file already
+    exists there on disk. Taken names divert to a numeric suffix:
+    ``IMG-1.jpg``, ``IMG-2.jpg``, …
 
-    Pure path arithmetic — does not touch the filesystem. Deterministic
-    for a given input order (collect_files returns sorted paths).
+    ``force`` lets a source reclaim its own natural name (``IMG.heic``
+    → ``IMG.jpg``) even if it exists on disk. It never applies to the
+    suffixed names: an existing ``IMG-1.jpg`` may be an unrelated photo
+    we can't identify as ours, so it is always diverted around.
+
+    The exists() checks are a snapshot; convert_one re-checks before
+    writing as a backstop against files appearing mid-run.
     """
     claimed: set[Path] = set()
     outs: list[Path] = []
     for src in files:
-        out = src.with_suffix(".jpg")
+        natural = src.with_suffix(".jpg")
+        out = natural
         n = 0
-        while out in claimed:
+        while out in claimed or (out.exists() and not (force and out == natural)):
             n += 1
             out = src.with_name(f"{src.stem}-{n}.jpg")
         claimed.add(out)
@@ -422,28 +434,31 @@ def plan_outputs(files: list[Path]) -> list[Path]:
     return outs
 
 
+def announce_diversions(files: list[Path], outs: list[Path]) -> None:
+    """Warn about every output diverted from its natural name."""
+    for src, out in zip(files, outs, strict=True):
+        natural = src.with_suffix(".jpg")
+        if out.name != natural.name:
+            print(f"warning: '{natural.name}' is taken — converting {src} to '{out.name}'", file=sys.stderr)
+
+
 # =========================================================================
 # Parallel runner
 # =========================================================================
 
 
-def _tally(ok: int, skipped: int, failed: int, result: Result, verbose: bool) -> tuple[int, int, int]:
+def _tally(counts: Counter[Status], result: Result, verbose: bool) -> None:
     """Update counters and print per-file output for one conversion result."""
-    if result.status is Status.OK:
-        ok += 1
-        if verbose:
-            note = f" (warning: {'; '.join(result.warnings)})" if result.warnings else ""
-            print(f"ok: {result.src}{note}", file=sys.stderr)
-    elif result.status is Status.SKIP:
-        skipped += 1
-        if verbose:
-            print(f"skip: {result.src}", file=sys.stderr)
-    else:  # Status.FAIL
-        failed += 1
+    counts[result.status] += 1
+    if result.status is Status.FAIL:
         # Always print failures, even without -v. Silent failures are how
         # data loss happens.
         print(f"FAIL {result.src}: {result.error}", file=sys.stderr)
-    return ok, skipped, failed
+    elif verbose:
+        label = "ok" if result.status is Status.OK else "skip"
+        print(f"{label}: {result.src}", file=sys.stderr)
+    for w in result.warnings:
+        print(f"warning: {result.src}: {w}", file=sys.stderr)
 
 
 def run_pool(
@@ -475,7 +490,9 @@ def run_pool(
     conversions finish naturally — preserving their atomic-write
     guarantee. A second Ctrl-C during that drain propagates and aborts.
     """
-    ok = skipped = failed = 0
+    counts: Counter[Status] = Counter()
+    futures: list[Future[Result]] = []
+    tallied: set[Future[Result]] = set()
     interrupted = False
 
     # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly
@@ -485,14 +502,13 @@ def run_pool(
         try:
             # Submit everything up front. The pool internally queues anything
             # over `max_workers` and spawns them as workers free up.
-            futures: list[Future[Result]] = [
-                ex.submit(convert_one, f, opts, out) for f, out in zip(files, outs, strict=True)
-            ]
+            futures = [ex.submit(convert_one, f, opts, out) for f, out in zip(files, outs, strict=True)]
             # `as_completed` yields futures as they finish, NOT in
             # submission order. This means progress feels smooth even if
             # one file is much slower than the rest.
             for fut in as_completed(futures):
-                ok, skipped, failed = _tally(ok, skipped, failed, fut.result(), verbose)
+                tallied.add(fut)
+                _tally(counts, fut.result(), verbose)
         except KeyboardInterrupt:
             interrupted = True
             # Drop everything still queued; conversions already running
@@ -500,8 +516,14 @@ def run_pool(
             ex.shutdown(cancel_futures=True)
 
     if interrupted:
+        for fut in futures:
+            # exception() is only non-None for a propagated KeyboardInterrupt
+            # (convert_one turns everything else into a FAIL Result).
+            finished = fut.done() and not fut.cancelled() and fut.exception() is None
+            if finished and fut not in tallied:
+                _tally(counts, fut.result(), verbose)
         print("Interrupted.", file=sys.stderr)
-    return ok, skipped, failed, interrupted
+    return counts[Status.OK], counts[Status.SKIP], counts[Status.FAIL], interrupted
 
 
 # =========================================================================
@@ -519,13 +541,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="heic2jpg",
         description="Fast HEIC to JPG converter",
     )
+    defaults = Options()
     p.add_argument("path", nargs="?", default=".", help="File or directory to convert (default: current dir)")
-    p.add_argument("-q", "--quality", type=int, default=30, metavar="[1-100]", help="Target quality (default: 30)")
+    p.add_argument(
+        "-q",
+        "--quality",
+        type=int,
+        default=defaults.quality,
+        metavar="[1-100]",
+        help=f"Target quality (default: {defaults.quality})",
+    )
     p.add_argument("-m", "--metadata", action="store_true", help="Preserve EXIF metadata")
     p.add_argument("-t", "--times", action="store_true", help="Preserve source file timestamps")
     p.add_argument("-k", "--keep", action="store_true", help="Keep originals (default: delete after conversion)")
     p.add_argument("-R", "--recursive", action="store_true", help="Recurse into subdirectories")
-    p.add_argument("-f", "--force", action="store_true", help="Overwrite existing .jpg outputs")
+    p.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Overwrite an existing .jpg output instead of writing a numbered variant",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--version", action="version", version=__version__)
 
@@ -544,15 +579,16 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     """
     args = parse_args(argv)
 
-    # Kick off the PyPI update check now so the network round-trip overlaps
-    # with the conversion work; the hint (if any) is printed at the end.
-    notifier = UpdateNotifier("heic2jpg", __version__)
-    notifier.start()
-
     # --- Validate args -----------------------------------------------------
     if not (1 <= args.quality <= 100):  # noqa: PLR2004 — quality is 1-100%
         print("Error: quality must be 1-100", file=sys.stderr)
         return 1
+
+    # Kick off the PyPI update check (only once the invocation is known to be
+    # valid), so the network round-trip overlaps with the conversion work;
+    # the hint (if any) is printed at the end.
+    notifier = UpdateNotifier("heic2jpg", __version__)
+    notifier.start()
 
     # Register the codec lazily, and bail early if it's unavailable —
     # better than failing one file at a time later.
@@ -582,8 +618,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
         print(f"No HEIC files found in: {src}", file=sys.stderr)
         return 2
 
-    # Resolve output-name collisions (e.g. IMG.heic vs IMG.HEIC) up front.
-    outs = plan_outputs(files)
+    # Resolve output-name conflicts (existing files, IMG.heic vs IMG.HEIC)
+    # up front, and say which files got diverted to a numbered name.
+    outs = plan_outputs(files, force=args.force)
+    announce_diversions(files, outs)
 
     opts = Options(
         quality=args.quality,
