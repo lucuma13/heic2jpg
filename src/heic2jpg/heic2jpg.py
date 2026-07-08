@@ -234,9 +234,11 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
     """
     Convert HEIC to JPEG using Pillow + pillow-heif.
 
-    metadata=True → embed the source's EXIF bytes in the JPEG. Without
-                    this flag only the rotation baked in by exif_transpose
-                    is kept and the EXIF block is dropped.
+    metadata=True → embed the source's EXIF bytes in the JPEG, except the
+                    Orientation tag: rotation is always normalized into the
+                    pixels by exif_transpose, so Orientation is stripped to
+                    avoid rotating the already-upright pixels a second time.
+                    Without this flag the EXIF block is dropped entirely.
     """
     with Image.open(src) as im:
         # Bake in EXIF rotation and convert to RGB (remove transparency).
