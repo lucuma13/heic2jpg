@@ -148,7 +148,7 @@ def test_fresh_cache_skips_network(enabled_env, monkeypatch, tmp_path, capsys):
 
     notifier.start()
     notifier.notify()
-    assert f"Update available! Run: '{UPGRADE_COMMAND}'" in capsys.readouterr().err
+    assert f"Update available! Run: {UPGRADE_COMMAND}" in capsys.readouterr().err
 
 
 def test_stale_cache_triggers_fetch_and_rewrite(enabled_env, monkeypatch, tmp_path, capsys):
@@ -184,7 +184,7 @@ def test_fetch_queries_pypi_and_notifies(enabled_env, monkeypatch, tmp_path, cap
     notifier.start()
     notifier.notify(timeout=5)
     assert fake.url == f"https://pypi.org/pypi/{PACKAGE}/json"
-    assert f"Update available! Run: '{UPGRADE_COMMAND}'" in capsys.readouterr().err
+    assert f"Update available! Run: {UPGRADE_COMMAND}" in capsys.readouterr().err
 
 
 def test_no_hint_when_up_to_date(enabled_env, monkeypatch, tmp_path, capsys):
@@ -216,7 +216,7 @@ def test_custom_upgrade_command(enabled_env, monkeypatch, tmp_path, capsys):
 
     notifier.start()
     notifier.notify(timeout=5)
-    assert "Run: 'pipx upgrade other-pkg'" in capsys.readouterr().err
+    assert "Run: pipx upgrade other-pkg" in capsys.readouterr().err
 
 
 # ===========================================================================
@@ -233,6 +233,7 @@ def test_hint_is_coloured_when_stderr_supports_it(enabled_env, monkeypatch, tmp_
     notifier.notify()
     err = capsys.readouterr().err
     assert err.startswith(update_checker.ORANGE)
+    assert f"{update_checker.BOLD}{UPGRADE_COMMAND}" in err  # command itself is bold
     assert err.rstrip("\n").endswith(update_checker.RESET)
 
 
@@ -245,7 +246,7 @@ def test_hint_is_plain_when_stderr_lacks_colour(enabled_env, monkeypatch, tmp_pa
     notifier.notify()
     err = capsys.readouterr().err
     assert "\033[" not in err
-    assert f"Update available! Run: '{UPGRADE_COMMAND}'" in err
+    assert f"Update available! Run: {UPGRADE_COMMAND}" in err
 
 
 # ===========================================================================

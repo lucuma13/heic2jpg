@@ -3,7 +3,7 @@
 It checks PyPI for a newer release of the package and prints an upgrade
 hint to stderr:
 
-    Update available! Run: 'uv tool upgrade <package_name>'
+    Update available! Run: uv tool upgrade <package_name>
 
 Features:
   - the upgrade command is inferred from where the package lives on disk
@@ -73,6 +73,7 @@ def _stderr_is_interactive() -> bool:
 
 
 ORANGE = "\033[38;5;208m"
+BOLD = "\033[1m"
 RESET = "\033[0m"
 
 
@@ -164,7 +165,8 @@ class UpdateNotifier:
     upgrade_command : shown in the hint; default: inferred from the install
                       location (uv tool / pipx / Homebrew / uv venv / pip)
     check_interval  : seconds between PyPI requests (default: one day)
-    cache_dir       : where the check result is cached (default: platform cache dir)
+    cache_dir       : where the check result is cached (default: a
+                      per-package subdir of the platform cache dir)
     """
 
     def __init__(
@@ -179,7 +181,7 @@ class UpdateNotifier:
         self.current_version = current_version
         self.upgrade_command = upgrade_command or _detect_upgrade_command(package)
         self.check_interval = check_interval
-        self._cache_path = (cache_dir or _default_cache_dir()) / f"{package}-update-check.json"
+        self._cache_path = (cache_dir or _default_cache_dir() / package) / "update-check.json"
         self._latest: str | None = None
         self._thread: threading.Thread | None = None
 
@@ -207,9 +209,11 @@ class UpdateNotifier:
         if self._thread is not None:
             self._thread.join(timeout)
         if self._latest is not None and _is_newer(self._latest, self.current_version):
-            message = f"Update available! Run: '{self.upgrade_command}'"
             if _stderr_supports_color():
-                message = f"{ORANGE}{message}{RESET}"
+                # BOLD stacks on ORANGE, so the command renders bold orange.
+                message = f"{ORANGE}Update available! Run: {BOLD}{self.upgrade_command}{RESET}"
+            else:
+                message = f"Update available! Run: {self.upgrade_command}"
             print(message, file=sys.stderr)
 
     # --- internals ---------------------------------------------------------
@@ -217,6 +221,8 @@ class UpdateNotifier:
     def _enabled(self) -> bool:
         env_prefix = re.sub(r"[^A-Z0-9]", "_", self.package.upper())
         opt_outs = (f"{env_prefix}_NO_UPDATE_CHECK", "NO_UPDATE_CHECK", "CI")
+        # Any non-empty value opts out — including "0" and "false" — matching
+        # how CI-style flags are conventionally treated.
         if any(os.environ.get(var) for var in opt_outs):
             return False
         if _parse_version(self.current_version) is None:  # dev install / unknown version
