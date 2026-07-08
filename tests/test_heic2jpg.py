@@ -282,6 +282,25 @@ class TestConvertWithPillow:
             heic2jpg.convert_with_pillow(tmp_path / "x.heic", tmp_path / "out.jpg", quality=80, metadata=True)
         assert "exif" not in transposed.save.call_args[1]
 
+    def test_orientation_is_baked_in_and_stripped(self, tmp_path):
+        """A source tagged Orientation=6 (90° CW) is physically rotated, and the
+        Orientation tag is absent from the output so pixels aren't rotated twice.
+
+        The HEIC encoder normalizes Orientation to 1, so the oriented source is
+        built in memory and fed through the *real* exif_transpose."""
+        src = Image.new("RGB", (40, 20), (100, 150, 200))
+        exif = src.getexif()
+        exif[0x0112] = 6  # Orientation tag
+        src.info["exif"] = exif.tobytes()
+
+        out = tmp_path / "out.jpg"
+        with patch("heic2jpg.heic2jpg.Image.open", return_value=src):
+            heic2jpg.convert_with_pillow(tmp_path / "x.heic", out, quality=90, metadata=True)
+
+        with Image.open(out) as im:
+            assert im.size == (20, 40)  # width/height swapped by the rotation
+            assert im.getexif().get(0x0112) is None
+
     def test_raises_on_nonexistent_source(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             heic2jpg.convert_with_pillow(tmp_path / "ghost.heic", tmp_path / "out.jpg", quality=85, metadata=False)
