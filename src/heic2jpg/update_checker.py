@@ -51,7 +51,7 @@ def _parse_version(version: str) -> Version | None:
 def _is_newer(latest: str, current: str) -> bool:
     """True if ``latest`` is a strictly higher release than ``current``.
 
-    Full PEP 440 comparison. An unparseable version on either
+    Full PEP 440 comparison. An unparsable version on either
     side yields False — a wrong hint is worse than no hint.
     """
     latest_v, current_v = _parse_version(latest), _parse_version(current)
