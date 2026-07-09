@@ -48,7 +48,7 @@ from pathlib import Path
 import pillow_heif
 from PIL import Image, ImageOps
 
-from heic2jpg.update_checker import UpdateNotifier
+from heic2jpg.update_checker import run_with_update_check
 
 # -----------------------------------------------------------------------------
 # Version
@@ -570,7 +570,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
+def main(argv: list[str] | None = None) -> int:
+    """Console-script entry point: the CLI body runs inside the PyPI update check."""
+    return run_with_update_check("heic2jpg", __version__, lambda: _main(argv))
+
+
+def _main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     """Entry point.
 
     Returns the process exit code:
@@ -586,12 +591,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     if not (1 <= args.quality <= 100):  # noqa: PLR2004 — quality is 1-100%
         print("Error: quality must be 1-100", file=sys.stderr)
         return 1
-
-    # Kick off the PyPI update check (only once the invocation is known to be
-    # valid), so the network round-trip overlaps with the conversion work;
-    # the hint (if any) is printed at the end.
-    notifier = UpdateNotifier("heic2jpg", __version__)
-    notifier.start()
 
     # Register the codec lazily, and bail early if it's unavailable —
     # better than failing one file at a time later.
@@ -659,8 +658,6 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     if interrupted:
         return 130
 
-    # Only after a completed run — error exits and Ctrl-C shouldn't nag.
-    notifier.notify()
     return 3 if failed else 0
 
 
