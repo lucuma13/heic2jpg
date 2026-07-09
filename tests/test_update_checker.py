@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import time
+import tomllib
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,8 +17,9 @@ from unittest.mock import MagicMock
 import pytest
 from packaging.version import Version
 
-# The only package-specific value: set this to port the suite to another project.
-PACKAGE = "mhl-suite"
+# Fully portable: the distribution name is read from the project's pyproject.toml
+# (two levels up from this file), so this suite drops into any project unchanged.
+PACKAGE = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())["project"]["name"]
 
 # Everything else is derived: the import name per the packaging convention
 # (dist name with '-' → '_'), the installed version and the console-script
