@@ -1,9 +1,12 @@
 """Tests for the PyPI update-notice helper."""
 
+import gzip
 import importlib
+import importlib.metadata
 import io
 import json
 import re
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -14,10 +17,21 @@ import pytest
 from packaging.version import Version
 
 # The only package-specific value: set this to port the suite to another project.
-PACKAGE = "heic2jpg"
+PACKAGE = "mhl-suite"
 
-update_checker = importlib.import_module(f"{PACKAGE}.update_checker")
+# Everything else is derived: the import name per the packaging convention
+# (dist name with '-' → '_'), the installed version and the console-script
+# entry points from the package metadata.
+MODULE = PACKAGE.replace("-", "_")
+VERSION = importlib.metadata.version(PACKAGE)
+CONSOLE_SCRIPTS = sorted(
+    (ep for ep in importlib.metadata.distribution(PACKAGE).entry_points if ep.group == "console_scripts"),
+    key=lambda ep: ep.name,
+)
+
+update_checker = importlib.import_module(f"{MODULE}.update_checker")
 UpdateNotifier = update_checker.UpdateNotifier
+run_with_update_check = update_checker.run_with_update_check
 _detect_upgrade_command = update_checker._detect_upgrade_command
 _is_newer = update_checker._is_newer
 _parse_version = update_checker._parse_version
@@ -41,14 +55,30 @@ def enabled_env(monkeypatch):
     monkeypatch.setattr(update_checker, "_stderr_is_interactive", lambda: True)
 
 
-def fake_pypi(monkeypatch, version: str):
-    """Replace urllib.request.urlopen with a canned PyPI JSON response."""
-    body = json.dumps({"info": {"version": version}}).encode()
-    captured = SimpleNamespace(url=None)
+class FakeResponse(io.BytesIO):
+    """A urlopen() response double: a readable body plus response headers."""
+
+    def __init__(self, body: bytes, headers: dict | None = None):
+        super().__init__(body)
+        self.headers = headers or {}
+
+
+def fake_pypi(monkeypatch, version: str, *, gzipped: bool = False, body: bytes | None = None):
+    """Replace urllib.request.urlopen with a canned PyPI JSON response.
+
+    Captures the request's URL and headers for assertions. `gzipped` serves
+    the body gzip-encoded (with the matching response header); `body`
+    overrides the payload entirely (still gzipped when requested).
+    """
+    payload = body if body is not None else json.dumps({"info": {"version": version}}).encode()
+    headers = {"Content-Encoding": "gzip"} if gzipped else {}
+    wire_body = gzip.compress(payload) if gzipped else payload
+    captured = SimpleNamespace(url=None, request_headers=None)
 
     def fake_urlopen(request, timeout=None):
         captured.url = request.full_url
-        return io.BytesIO(body)
+        captured.request_headers = dict(request.header_items())
+        return FakeResponse(wire_body, headers)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     return captured
@@ -163,6 +193,17 @@ def test_stale_cache_triggers_fetch_and_rewrite(enabled_env, monkeypatch, tmp_pa
     assert json.loads(notifier._cache_path.read_text())["latest"] == "3.0"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_cache_file_is_private(enabled_env, monkeypatch, tmp_path):
+    """The cache reveals which tools the user runs, so it is written 0o600."""
+    fake_pypi(monkeypatch, "3.0")
+    notifier = UpdateNotifier(PACKAGE, "1.0", cache_dir=tmp_path)
+
+    notifier.start()
+    notifier.notify(timeout=5)
+    assert notifier._cache_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_corrupt_cache_is_ignored(enabled_env, monkeypatch, tmp_path, capsys):
     fake_pypi(monkeypatch, "3.0")
     notifier = UpdateNotifier(PACKAGE, "1.0", cache_dir=tmp_path)
@@ -186,6 +227,44 @@ def test_fetch_queries_pypi_and_notifies(enabled_env, monkeypatch, tmp_path, cap
     notifier.notify(timeout=5)
     assert fake.url == f"https://pypi.org/pypi/{PACKAGE}/json"
     assert f"Update available! Run: {UPGRADE_COMMAND}" in capsys.readouterr().err
+
+
+def test_fetch_quotes_package_name_and_identifies_itself(enabled_env, monkeypatch, tmp_path):
+    """The package name is URL-quoted and the request carries an identifiable
+    User-Agent plus a gzip Accept-Encoding (urllib doesn't negotiate it)."""
+    fake = fake_pypi(monkeypatch, "2.0")
+    notifier = UpdateNotifier("odd/name", "1.0", upgrade_command="x", cache_dir=tmp_path)
+
+    notifier.start()
+    notifier.notify(timeout=5)
+    assert fake.url == "https://pypi.org/pypi/odd%2Fname/json"
+    # urllib normalizes header names to Capitalized-lowercase form.
+    assert fake.request_headers["User-agent"] == "odd/name/1.0 (update-check)"
+    assert fake.request_headers["Accept-encoding"] == "gzip"
+
+
+def test_gzipped_response_is_decompressed(enabled_env, monkeypatch, tmp_path, capsys):
+    fake_pypi(monkeypatch, "3.0", gzipped=True)
+    notifier = UpdateNotifier(PACKAGE, "1.0", cache_dir=tmp_path)
+
+    notifier.start()
+    notifier.notify(timeout=5)
+    assert "Update available!" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("gzipped", [False, True], ids=["raw", "gzip-bomb"])
+def test_oversized_response_is_discarded(enabled_env, monkeypatch, tmp_path, capsys, gzipped):
+    """A body over the cap — as transferred bytes or once decompressed — is
+    dropped without a hint or a cache write."""
+    monkeypatch.setattr(update_checker, "_MAX_RESPONSE_BYTES", 64)
+    oversized = json.dumps({"info": {"version": "9.9"}, "pad": "x" * 100}).encode()
+    fake_pypi(monkeypatch, "9.9", gzipped=gzipped, body=oversized)
+    notifier = UpdateNotifier(PACKAGE, "1.0", cache_dir=tmp_path)
+
+    notifier.start()
+    notifier.notify(timeout=5)
+    assert capsys.readouterr().err == ""
+    assert not notifier._cache_path.exists()
 
 
 def test_no_hint_when_up_to_date(enabled_env, monkeypatch, tmp_path, capsys):
@@ -248,6 +327,29 @@ def test_hint_is_plain_when_stderr_lacks_colour(enabled_env, monkeypatch, tmp_pa
     err = capsys.readouterr().err
     assert "\033[" not in err
     assert f"Update available! Run: {UPGRADE_COMMAND}" in err
+
+
+@pytest.mark.parametrize(
+    ("env", "tty", "expected"),
+    [
+        ({}, True, True),
+        ({}, False, False),
+        ({"NO_COLOR": "1"}, True, False),
+        ({"FORCE_COLOR": "1"}, False, True),
+        ({"NO_COLOR": "1", "FORCE_COLOR": "1"}, True, False),  # NO_COLOR wins
+        ({"NO_COLOR": ""}, True, True),  # the convention: only a non-empty value counts
+    ],
+)
+def test_color_follows_no_color_and_force_color(monkeypatch, env, tty, expected):
+    """https://no-color.org: NO_COLOR disables, FORCE_COLOR forces, otherwise
+    the TTY decides."""
+    for var in ("NO_COLOR", "FORCE_COLOR"):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setattr(update_checker.sys, "stderr", SimpleNamespace(isatty=lambda: tty))
+    monkeypatch.setattr(update_checker, "_enable_ansi_on_stderr", lambda: True)
+    assert update_checker._stderr_supports_color() is expected
 
 
 # ===========================================================================
@@ -368,6 +470,65 @@ def test_stderr_is_interactive_false_when_isatty_raises(monkeypatch):
 def test_stderr_supports_color_false_when_isatty_raises(monkeypatch):
     monkeypatch.setattr(update_checker.sys, "stderr", _BoomStderr())
     assert update_checker._stderr_supports_color() is False
+
+
+# ===========================================================================
+# CLI wiring — run_with_update_check and the console-script entry points
+# ===========================================================================
+
+
+@pytest.fixture
+def notifier_events(monkeypatch):
+    """Swap UpdateNotifier for a recorder; returns the event list."""
+    events = []
+
+    class FakeNotifier:
+        def __init__(self, package, version):
+            events.append(f"init {package} {version}")
+
+        def start(self):
+            events.append("start")
+
+        def notify(self):
+            events.append("notify")
+
+    monkeypatch.setattr(update_checker, "UpdateNotifier", FakeNotifier)
+    return events
+
+
+def test_run_with_update_check_wraps_the_body(notifier_events):
+    """The check starts before the body and the body's return value passes through."""
+    result = run_with_update_check(PACKAGE, "1.0", lambda: notifier_events.append("run") or 42)
+    assert result == 42
+    assert notifier_events == [f"init {PACKAGE} 1.0", "start", "run", "notify"]
+
+
+def test_run_with_update_check_notifies_on_every_exit_path(notifier_events):
+    """SystemExit from the body still notifies and propagates unchanged."""
+
+    def body():
+        raise SystemExit(3)
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_with_update_check(PACKAGE, "1.0", body)
+    assert excinfo.value.code == 3
+    assert notifier_events == [f"init {PACKAGE} 1.0", "start", "notify"]
+
+
+@pytest.mark.parametrize("script", CONSOLE_SCRIPTS, ids=[ep.name for ep in CONSOLE_SCRIPTS])
+def test_console_scripts_run_inside_the_update_check(monkeypatch, script):
+    """Every console script hangs its body on run_with_update_check, passing
+    the distribution name (what to ask PyPI about) and the installed version."""
+    cli = importlib.import_module(script.module)
+    entry = script.load()
+    calls = []
+    monkeypatch.setattr(cli, "run_with_update_check", lambda *args: calls.append(args))
+
+    entry()
+    ((package, version, run),) = calls
+    assert package == PACKAGE
+    assert version == VERSION
+    assert callable(run)
 
 
 def test_write_cache_failure_is_silent(enabled_env, monkeypatch, tmp_path):

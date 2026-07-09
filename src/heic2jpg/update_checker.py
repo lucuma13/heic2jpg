@@ -6,6 +6,8 @@ hint to stderr:
     Update available! Run: uv tool upgrade <package_name>
 
 Features:
+  - one-call CLI integration: hang the console-script entry point on
+    ``run_with_update_check(package, version, run)``
   - the upgrade command is inferred from where the package lives on disk
     (uv tool, pipx, Homebrew, uv-managed or plain venv), defaulting to
     ``uv tool upgrade`` when unrecognized; pass ``upgrade_command`` to
@@ -13,9 +15,13 @@ Features:
   - never crashes or slows down the host CLI: every failure is silent,
     and the network fetch runs in a daemon thread that is simply
     abandoned if it hasn't finished by the time notify() returns
-  - at most one PyPI request per ``check_interval`` (result cached in
-    the platform cache dir; another fetch happens only once it expires)
+  - at most one PyPI request per ``check_interval`` (result cached
+    private-to-the-user in the platform cache dir; another fetch happens
+    only once it expires)
+  - the fetch identifies its sender, requests a gzip body, and caps the
+    response size (raw and decompressed) against hostile/broken servers
   - hints only appear on interactive runs (stderr is a tty)
+  - colour follows the NO_COLOR / FORCE_COLOR conventions (no-color.org)
   - opt out with <PACKAGE>_NO_UPDATE_CHECK=1, NO_UPDATE_CHECK=1, or in CI
 
 """
@@ -28,12 +34,23 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
+import zlib
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from packaging.version import InvalidVersion, Version
 
 _DAY_SECONDS = 24 * 60 * 60.0
+
+# Caps how much of a PyPI response is read (and decompressed) — a hostile or
+# broken response must not balloon memory inside the host CLI. Must stay above
+# the largest real PyPI JSON payload (a few MiB for huge packages).
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+_T = TypeVar("_T")
 
 
 def _parse_version(version: str) -> Version | None:
@@ -101,11 +118,36 @@ def _enable_ansi_on_stderr() -> bool:
 
 
 def _stderr_supports_color() -> bool:
-    """True when stderr is a TTY and ANSI colour is available."""
+    """True when ANSI colour should be used on stderr.
+
+    Follows the NO_COLOR / FORCE_COLOR conventions (https://no-color.org): a
+    non-empty NO_COLOR disables colour, else a non-empty FORCE_COLOR forces
+    it, else colour is used when stderr is a TTY and ANSI is available.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
     try:
         return sys.stderr.isatty() and _enable_ansi_on_stderr()
     except Exception:  # noqa: BLE001 — stderr may be closed or replaced; stay monochrome
         return False
+
+
+def _gunzip_capped(data: bytes) -> bytes:
+    """Decompress a gzip body, refusing to expand past _MAX_RESPONSE_BYTES.
+
+    gzip shrinks the transfer but not the decompressed payload this guards, so
+    a small hostile body ("gzip bomb") must not be allowed to blow up memory.
+    Raises on oversized or malformed input; _fetch treats any raise as
+    "no result".
+    """
+    decompressor = zlib.decompressobj(wbits=zlib.MAX_WBITS | 16)  # | 16 selects the gzip format
+    result = decompressor.decompress(data, _MAX_RESPONSE_BYTES + 1)
+    if len(result) > _MAX_RESPONSE_BYTES or decompressor.unconsumed_tail:
+        msg = "decompressed response exceeded the maximum allowed size"
+        raise ValueError(msg)
+    return result
 
 
 def _default_cache_dir() -> Path:
@@ -230,12 +272,29 @@ class UpdateNotifier:
         return _stderr_is_interactive()
 
     def _fetch(self) -> None:
-        """Ask PyPI for the latest version; cache it. Runs in the daemon thread."""
+        """Ask PyPI for the latest version; cache it. Runs in the daemon thread.
+
+        The request identifies its sender (PyPI operators prefer meaningful
+        User-Agents) and asks for a gzip body. Both the raw read and the decompression are
+        capped at _MAX_RESPONSE_BYTES; an oversized response is simply discarded.
+        """
         try:
-            url = f"https://pypi.org/pypi/{self.package}/json"
-            request = urllib.request.Request(url, headers={"Accept": "application/json"})  # noqa: S310 — fixed https URL
+            url = f"https://pypi.org/pypi/{urllib.parse.quote(self.package, safe='')}/json"
+            request = urllib.request.Request(  # noqa: S310 — fixed https URL
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
+                    "User-Agent": f"{self.package}/{self.current_version} (update-check)",
+                },
+            )
             with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 — fixed https URL
-                info = json.load(response)
+                raw = response.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > _MAX_RESPONSE_BYTES:
+                    return
+                if response.headers.get("Content-Encoding") == "gzip":
+                    raw = _gunzip_capped(raw)
+            info = json.loads(raw)
             self._latest = str(info["info"]["version"])
             self._write_cache(self._latest)
         except Exception:  # noqa: BLE001, S110 — update hints must never break the host CLI
@@ -258,9 +317,31 @@ class UpdateNotifier:
             # Write-then-rename so a concurrent reader never sees a torn file.
             tmp = self._cache_path.with_suffix(f".tmp.{os.getpid()}")
             tmp.write_text(payload, encoding="utf-8")
+            tmp.chmod(0o600)
             tmp.replace(self._cache_path)
         except Exception:  # noqa: BLE001, S110 — caching is best-effort
             pass
+
+
+def run_with_update_check(package: str, current_version: str, run: Callable[[], _T]) -> _T:
+    """Run a CLI body inside the update check — the one-line entry-point hook.
+
+    ::
+
+        def main() -> None:
+            run_with_update_check("my-package", __version__, _main)
+
+    start() returns instantly (cache read or a daemon-thread fetch that runs
+    while ``run`` does the real work); notify() prints the upgrade hint on
+    every exit path — ``run``'s return value, SystemExit, and any other
+    exception all pass straight through.
+    """
+    notifier = UpdateNotifier(package, current_version)
+    notifier.start()
+    try:
+        return run()
+    finally:
+        notifier.notify()
 
 
 if __name__ == "__main__":  # pragma: no cover — manual smoke test
