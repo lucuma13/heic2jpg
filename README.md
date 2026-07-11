@@ -38,18 +38,18 @@ heic2jpg --version
 
 Convert a single file:
 
-```bash
+```sh
 heic2jpg path/to/photo.HEIC
 ```
 
 Convert all files in directory:
-```bash
+```sh
 heic2jpg path/to/photo/album
 heic2jpg                        # current directory
 ```
 
 Convert all files in current directory recursively, preserving metadata and timestamps:
-```bash
+```sh
 heic2jpg -Rmt
 ```
 
