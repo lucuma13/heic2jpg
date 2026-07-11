@@ -3,6 +3,7 @@
 import sys
 from pathlib import Path
 
+
 def collect_files(root: Path, recursive: bool = False) -> list[Path]:
     """
     Find all HEIC files under ``root``.

@@ -16,6 +16,7 @@ from heic2jpg.osutils import _restore_timestamps
 # Codec backend detection
 # -------------------------------------------------------------------------
 
+
 @functools.cache
 def _try_pillow_heif() -> bool:
     """

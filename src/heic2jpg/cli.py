@@ -33,6 +33,7 @@ from heic2jpg.discovery import announce_diversions, collect_files, plan_outputs
 from heic2jpg.runner import run_pool
 from heic2jpg.update_checker import run_with_update_check
 
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Build and run the argument parser.
 
