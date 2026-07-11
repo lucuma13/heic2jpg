@@ -41,7 +41,7 @@ dependencies = [
   "pillow-heif>=1.4",
 ]
 urls.Homepage = "https://github.com/lucuma13/heic2jpg"
-scripts.heic2jpg = "heic2jpg.heic2jpg:main"
+scripts.heic2jpg = "heic2jpg.cli:main"
 
 [dependency-groups]
 dev = [
