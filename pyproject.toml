@@ -102,3 +102,6 @@ lint.per-file-ignores."tests/*" = [
 
 [tool.pytest]
 ini_options.addopts = "--strict-markers --cov=src --cov-branch --cov-report=term-missing --cov-report=xml"
+
+[tool.heic2jpg]
+homebrew.dependencies = [ "libheif", "pkgconf:build" ]
