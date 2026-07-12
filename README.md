@@ -34,6 +34,10 @@ uv tool install heic2jpg
 heic2jpg --version
 ```
 
+#### Alternative (macOS only)
+
+Install with [Homebrew](https://brew.sh/): `brew install lucuma13/dit/heic2jpg`
+
 ### 📖 Usage examples
 
 Convert a single file:
