@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies
-from PIL import Image
+from PIL import Image, ImageCms
 
 import heic2jpg
 from heic2jpg import convert
@@ -102,6 +102,40 @@ class TestConvertWithPillow:
         ):
             convert.convert_with_pillow(tmp_path / "x.heic", tmp_path / "out.jpg", quality=80, metadata=True)
         assert "exif" not in transposed.save.call_args[1]
+
+    def test_icc_profile_forwarded_even_without_metadata(self, tmp_path):
+        """The source ICC profile is embedded regardless of the metadata flag."""
+        fake_icc = b"\x00\x00\x02\x18appl" + b"fake profile bytes"
+        mock_img, transposed = self._mock_image(info={"icc_profile": fake_icc})
+        with (
+            patch("heic2jpg.convert.Image.open", return_value=mock_img),
+            patch("heic2jpg.convert.ImageOps.exif_transpose", return_value=transposed),
+        ):
+            convert.convert_with_pillow(tmp_path / "x.heic", tmp_path / "out.jpg", quality=80, metadata=False)
+        assert transposed.save.call_args[1]["icc_profile"] == fake_icc
+
+    def test_no_icc_key_when_source_has_no_profile(self, tmp_path):
+        """A source without a profile must not pass icc_profile to save()."""
+        mock_img, transposed = self._mock_image(info={})
+        with (
+            patch("heic2jpg.convert.Image.open", return_value=mock_img),
+            patch("heic2jpg.convert.ImageOps.exif_transpose", return_value=transposed),
+        ):
+            convert.convert_with_pillow(tmp_path / "x.heic", tmp_path / "out.jpg", quality=80, metadata=False)
+        assert "icc_profile" not in transposed.save.call_args[1]
+
+    def test_icc_profile_survives_real_roundtrip(self, tmp_path):
+        """A profiled source yields a JPEG whose embedded profile round-trips."""
+        icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        src = Image.new("RGB", (16, 16), (200, 30, 30))
+        src.info["icc_profile"] = icc
+
+        out = tmp_path / "out.jpg"
+        with patch("heic2jpg.convert.Image.open", return_value=src):
+            convert.convert_with_pillow(tmp_path / "x.heic", out, quality=90, metadata=False)
+
+        with Image.open(out) as im:
+            assert im.info.get("icc_profile") == icc
 
     def test_orientation_is_baked_in_and_stripped(self, tmp_path):
         """

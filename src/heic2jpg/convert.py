@@ -101,6 +101,9 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
                     pixels by exif_transpose, so Orientation is stripped to
                     avoid rotating the already-upright pixels a second time.
                     Without this flag the EXIF block is dropped entirely.
+
+    The source's ICC colour profile is always carried over, independent of
+    ``metadata``.
     """
     with Image.open(src) as im:
         # Bake in EXIF rotation and convert to RGB (remove transparency).
@@ -117,6 +120,9 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
                 with contextlib.suppress(Exception):  # getexif absent on some Pillow builds
                     exif_bytes = rgb.getexif().tobytes() or None
 
+        # Grab the ICC profile before any mode conversion, which drops .info.
+        icc_bytes: bytes | None = rgb.info.get("icc_profile")
+
         if rgb.mode != "RGB":
             rgb = rgb.convert("RGB")
 
@@ -129,6 +135,8 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
         }
         if exif_bytes:
             save_kwargs["exif"] = exif_bytes
+        if icc_bytes:
+            save_kwargs["icc_profile"] = icc_bytes
 
         rgb.save(out, **save_kwargs)
 
