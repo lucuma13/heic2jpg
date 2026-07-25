@@ -138,6 +138,11 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
         if icc_bytes:
             save_kwargs["icc_profile"] = icc_bytes
 
+        # Keep passing a path here, not a BytesIO or other file-like object.
+        # Pillow's JPEG encoder only releases the GIL when it can write straight
+        # to a real file, encoding in a single C call; given a file-like object
+        # it falls back to a chunked loop that returns to Python between chunks
+        # and holds the GIL throughout.
         rgb.save(out, **save_kwargs)
 
 

@@ -54,6 +54,9 @@ def run_pool(
     tallied: set[Future[Result]] = set()
     interrupted = False
 
+    # Threads, not processes, because pillow-heif releases the GIL during HEIF
+    # decode and Pillow releases it during JPEG encode (convert_with_pillow
+    # saves to a path), so both already run in parallel.
     # `with ThreadPoolExecutor(...)` ensures the pool is shut down cleanly even
     # if an exception escapes the loop. Without the context manager, Python
     # would leak worker threads.
