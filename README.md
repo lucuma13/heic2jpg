@@ -7,7 +7,7 @@
 [![CI](https://github.com/lucuma13/heic2jpg/actions/workflows/ci.yml/badge.svg)](https://github.com/lucuma13/heic2jpg/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/lucuma13/heic2jpg/graph/badge.svg?token=X3YA4CA9E3)](https://codecov.io/gh/lucuma13/heic2jpg)
 
-`heic2jpg` is a fast HEIC to JPEG converter designed to resolve the compatibility gap between iPhone image files and common desktop workflows. Conversion runs in parallel across worker threads using [pillow-heif](https://pypi.org/project/pillow-heif) for fast, in-process decoding.
+`heic2jpg` is a fast HEIC to JPEG converter designed to resolve the compatibility gap between iPhone image files and common desktop workflows. Conversion runs in parallel across worker threads using [pillow-heif](https://pypi.org/project/pillow-heif) for fast, in-process decoding. And it all happens locally in your machine.
 
 
 ### 🚀 Installation
@@ -69,7 +69,7 @@ Other options:
 
 ### 📊 Performance
 
-pillow-heif's C code releases the Python's GIL during HEIF decode and JPEG encode. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers over 6x the speed of traditional ImageMagick workflows.
+pillow-heif releases the Python GIL during HEIF decode, and Pillow releases it during JPEG encode when writing to a file. The default `ThreadPoolExecutor` therefore gets full CPU parallelism with no per-worker process startup cost. That offers over 6x the speed of traditional ImageMagick workflows.
 
 Version          | Backend          | 100 files   |
 -----------------|------------------|------------:|
