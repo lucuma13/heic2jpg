@@ -526,7 +526,7 @@ class TestFuzzValidImages:
         max_examples=80,
         suppress_health_check=[HealthCheck.function_scoped_fixture, HealthCheck.too_slow],
     )
-    def test_valid_heic_always_produces_valid_jpeg(self, tmp_path, width, height, r, g, b, quality, metadata):  # noqa: PLR0913
+    def test_valid_heic_always_produces_valid_jpeg(self, tmp_path, width, height, r, g, b, quality, metadata):  # noqa: PLR0913, PLR0917
         heic_bytes = make_heic_bytes(size=(width, height), color=(r, g, b))
         src = tmp_path / "valid.heic"
         src.write_bytes(heic_bytes)

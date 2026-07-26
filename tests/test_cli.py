@@ -213,7 +213,7 @@ class TestFuzzParseArgs:
         verbose=strategies.booleans(),
     )
     @settings(max_examples=200)
-    def test_all_flag_combinations_parse_without_error(self, quality, metadata, times, keep, recursive, force, verbose):  # noqa: PLR0913
+    def test_all_flag_combinations_parse_without_error(self, quality, metadata, times, keep, recursive, force, verbose):  # noqa: PLR0913, PLR0917
         argv = ["-q", str(quality)]
         if metadata:
             argv.append("-m")
