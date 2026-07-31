@@ -1,4 +1,4 @@
-"""heic2jpg — fast, parallel HEIC to JPEG converter."""
+"""heic2jpg - fast, parallel HEIC to JPEG converter."""
 
 import importlib.metadata
 

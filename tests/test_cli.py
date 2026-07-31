@@ -176,10 +176,10 @@ class TestFuzzQualityValues:
     def test_valid_quality_does_not_return_1_for_quality_reason(self, quality):
         """
         A valid quality value should never produce rc=1 due to quality
-        validation.  (It may still return 2 if no HEIC files exist — that's
+        validation.  (It may still return 2 if no HEIC files exist - that's
         fine; we just confirm it's not the quality-error path.) Uses tempfile
         rather than tmp_path because hypothesis reuses the fixture across
-        examples — each example needs its own clean directory.
+        examples - each example needs its own clean directory.
         """
         with tempfile.TemporaryDirectory() as d:
             rc = cli.main(["-q", str(quality), d])

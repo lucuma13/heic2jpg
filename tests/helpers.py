@@ -1,7 +1,7 @@
 """
 Importable test helpers shared across the test suite.
 
-Plain functions only — fixtures live in conftest.py.
+Plain functions only - fixtures live in conftest.py.
 """
 
 import io
@@ -36,4 +36,4 @@ def make_heic_bytes(size=(8, 8), color=(128, 128, 128)) -> bytes:
     return buf.getvalue()
 
 
-VALID_HEIC_BYTES = make_heic_bytes()  # cached once — reused across tests
+VALID_HEIC_BYTES = make_heic_bytes()  # cached once - reused across tests

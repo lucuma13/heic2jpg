@@ -13,7 +13,7 @@ def collect_files(root: Path, recursive: bool = False) -> list[Path]:
       - recursive=False (default): walks one level deep (original behaviour).
       - recursive=True  (-R):      walks the entire subtree via rglob.
 
-    The result is sorted for deterministic output — useful for tests and so that
+    The result is sorted for deterministic output - useful for tests and so that
     the user can mentally predict progress.
 
     Note on symlinks: ``iterdir`` and ``rglob`` do NOT follow directory symlinks
@@ -32,7 +32,7 @@ def plan_outputs(files: list[Path], force: bool = False) -> list[Path]:
     """
     Map each source file to a free, unique .jpg output path.
 
-    Every source gets converted — a taken output name never causes a
+    Every source gets converted - a taken output name never causes a
     skip or an overwrite. A name is taken when another source in this
     batch already claimed it (``IMG.heic`` and ``IMG.HEIC`` both →
     ``IMG.jpg`` on case-sensitive filesystems) or when a file already
@@ -66,4 +66,4 @@ def announce_diversions(files: list[Path], outs: list[Path]) -> None:
     for src, out in zip(files, outs, strict=True):
         natural = src.with_suffix(".jpg")
         if out.name != natural.name:
-            print(f"warning: '{natural.name}' is taken — converting {src} to '{out.name}'", file=sys.stderr)
+            print(f"warning: '{natural.name}' is taken - converting {src} to '{out.name}'", file=sys.stderr)

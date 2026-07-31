@@ -79,25 +79,25 @@ def _main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
     """Entry point.
 
     Returns the process exit code:
-      0   — success (everything converted or skipped)
-      1   — bad arguments or unusable environment (codec missing, bad path)
-      2   — no HEIC files found
-      3   — at least one conversion failed
-      130 — interrupted by Ctrl-C
+      0   - success (everything converted or skipped)
+      1   - bad arguments or unusable environment (codec missing, bad path)
+      2   - no HEIC files found
+      3   - at least one conversion failed
+      130 - interrupted by Ctrl-C
     """
     args = parse_args(argv)
 
     # --- Validate args -----------------------------------------------------
-    if not (1 <= args.quality <= 100):  # noqa: PLR2004 — quality is 1-100%
+    if not (1 <= args.quality <= 100):  # noqa: PLR2004 - quality is 1-100%
         print("Error: quality must be 1-100", file=sys.stderr)
         return 1
 
-    # Register the codec lazily, and bail early if it's unavailable —
+    # Register the codec lazily, and bail early if it's unavailable -
     # better than failing one file at a time later.
     if not _try_pillow_heif():
         print(
             "Error: could not initialise the HEIC codec. "
-            "The native libheif library may be missing or incompatible — "
+            "The native libheif library may be missing or incompatible - "
             "try reinstalling pillow-heif or installing libheif for your OS.",
             file=sys.stderr,
         )
@@ -153,7 +153,7 @@ def _main(argv: list[str] | None = None) -> int:  # noqa: PLR0911
 
     # Print a summary if we did anything noteworthy
     if args.verbose or failed:
-        print(f"Done in {dt:.2f}s — ok={ok} skipped={skipped} failed={failed}", file=sys.stderr)
+        print(f"Done in {dt:.2f}s - ok={ok} skipped={skipped} failed={failed}", file=sys.stderr)
 
     if interrupted:
         return 130

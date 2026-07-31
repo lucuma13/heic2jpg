@@ -256,7 +256,7 @@ def test_gzipped_response_is_decompressed(enabled_env, monkeypatch, tmp_path, ca
 
 @pytest.mark.parametrize("gzipped", [False, True], ids=["raw", "gzip-bomb"])
 def test_oversized_response_is_discarded(enabled_env, monkeypatch, tmp_path, capsys, gzipped):
-    """A body over the cap — as transferred bytes or once decompressed — is
+    """A body over the cap - as transferred bytes or once decompressed - is
     dropped without a hint or a cache write."""
     monkeypatch.setattr(update_checker, "_MAX_RESPONSE_BYTES", 64)
     oversized = json.dumps({"info": {"version": "9.9"}, "pad": "x" * 100}).encode()
@@ -414,7 +414,7 @@ def test_detect_upgrade_command_path_beats_pyvenv_cfg(tmp_path):
 
 
 def test_detect_upgrade_command_unresolvable_path_falls_back(tmp_path):
-    """A frozen/odd interpreter where resolve() raises must not crash — with no
+    """A frozen/odd interpreter where resolve() raises must not crash - with no
     readable pyvenv.cfg it lands on the default recommendation."""
     bad = MagicMock()
     bad.resolve.side_effect = OSError("frozen interpreter")
@@ -453,12 +453,12 @@ class TestDefaultCacheDir:
 
 
 # ===========================================================================
-# Never breaks the host CLI — "stay quiet" guarantees
+# Never breaks the host CLI - "stay quiet" guarantees
 # ===========================================================================
 
 
 class _BoomStderr:
-    """A stderr whose isatty() blows up — models a closed/replaced stream."""
+    """A stderr whose isatty() blows up - models a closed/replaced stream."""
 
     def isatty(self):
         raise ValueError("I/O operation on closed file")
@@ -475,7 +475,7 @@ def test_stderr_supports_color_false_when_isatty_raises(monkeypatch):
 
 
 # ===========================================================================
-# CLI wiring — run_with_update_check and the console-script entry points
+# CLI wiring - run_with_update_check and the console-script entry points
 # ===========================================================================
 
 
@@ -534,7 +534,7 @@ def test_console_scripts_run_inside_the_update_check(monkeypatch, script):
 
 
 def test_write_cache_failure_is_silent(enabled_env, monkeypatch, tmp_path):
-    """A read-only cache dir must not raise — caching is best-effort."""
+    """A read-only cache dir must not raise - caching is best-effort."""
 
     def boom(*args, **kwargs):
         raise OSError("read-only filesystem")

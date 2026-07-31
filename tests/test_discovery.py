@@ -152,7 +152,7 @@ class TestFuzzCollectFiles:
                 p.write_bytes(b"")
                 created.append(p)
             except (OSError, ValueError):
-                # Some generated names are invalid on this OS — skip them
+                # Skip generated names that are invalid on this OS
                 pass
 
         result = discovery.collect_files(tmp_path, recursive=False)

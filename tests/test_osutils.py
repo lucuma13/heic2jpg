@@ -83,7 +83,7 @@ class TestSetCreationTimeWindows:
     @settings(max_examples=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @pytest.mark.skipif(sys.platform == "win32", reason="non-Windows no-op path")
     def test_noop_on_non_windows_never_raises(self, tmp_path, ctime_ns):
-        """Any integer timestamp — positive, negative, or zero — is a no-op on non-Windows."""
+        """Any integer timestamp - positive, negative, or zero - is a no-op on non-Windows."""
         f = tmp_path / "dummy.txt"
         f.write_bytes(b"x")
         assert osutils._set_creation_time_windows(f, ctime_ns) is None

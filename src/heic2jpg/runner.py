@@ -46,7 +46,7 @@ def run_pool(
     Relies on Python's default SIGINT behaviour: Ctrl-C raises
     KeyboardInterrupt in the main thread (worker threads never receive
     it). We catch it, cancel everything still queued, and let in-flight
-    conversions finish naturally — preserving their atomic-write
+    conversions finish naturally - preserving their atomic-write
     guarantee. A second Ctrl-C during that drain propagates and aborts.
     """
     counts: Counter[Status] = Counter()

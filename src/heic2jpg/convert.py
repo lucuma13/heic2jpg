@@ -25,7 +25,7 @@ def _try_pillow_heif() -> bool:
     Called lazily from main() rather than at import time, so importing this
     module has no side effects: Pillow's process-global format registry is only
     mutated when a conversion is actually about to happen. The result is cached
-    — registration happens at most once per process.
+    - registration happens at most once per process.
 
     pillow-heif is a hard dependency so ImportError won't occur here, but
     register_heif_opener() can raise OSError if the native libheif shared
@@ -33,7 +33,7 @@ def _try_pillow_heif() -> bool:
     """
     try:
         # register_heif_opener teaches Pillow to recognise .heic files as
-        # readable image formats — after this, Image.open() works on them.
+        # readable image formats - after this, Image.open() works on them.
         pillow_heif.register_heif_opener()
         return True
     except OSError:
@@ -50,7 +50,7 @@ class Options:
     """
     Conversion settings shared by every file in a run.
 
-    These are also the CLI defaults — parse_args reads them, so they live in one
+    These are also the CLI defaults - parse_args reads them, so they live in one
     place. Frozen so a single instance can be shared safely across worker
     threads.
     """
@@ -153,7 +153,7 @@ def convert_with_pillow(src: Path, out: Path, quality: int, metadata: bool) -> N
 
 def convert_one(src: Path, opts: Options, out: Path | None = None) -> Result:
     """
-    Convert exactly one file. Pure function — safe to call from any thread.
+    Convert exactly one file. Pure function - safe to call from any thread.
 
     This wraps the chosen backend with the cross-cutting concerns:
     skip-if-exists, atomic write, optional original deletion, and structured
@@ -170,7 +170,7 @@ def convert_one(src: Path, opts: Options, out: Path | None = None) -> Result:
 
     # Skip if the destination already exists. plan_outputs normally diverts
     # around existing files, so this only fires when one appeared after planning
-    # — or on direct API calls. ``force`` consents to overwriting a source's own
+    # - or on direct API calls. ``force`` consents to overwriting a source's own
     # natural name, never a diverted one.
     if out.exists() and not (opts.force and out == natural):
         return Result(src, Status.SKIP)
@@ -209,16 +209,16 @@ def convert_one(src: Path, opts: Options, out: Path | None = None) -> Result:
             try:
                 src.unlink()
             except OSError as e:
-                # A warning rather than FAIL — the user got their JPEG,
+                # A warning rather than FAIL - the user got their JPEG,
                 # they just have a stale HEIC.
                 warnings.append(f"could not delete original: {e}")
 
         return Result(src, Status.OK, warnings=warnings)
 
-    except Exception as e:  # noqa: BLE001 — any conversion failure becomes Status.FAIL
+    except Exception as e:  # noqa: BLE001 - any conversion failure becomes Status.FAIL
         return Result(src, Status.FAIL, error=f"{type(e).__name__}: {e}")
     finally:
-        # Clean up the partial temp file on every failure path — including
+        # Clean up the partial temp file on every failure path - including
         # KeyboardInterrupt, which must propagate but not litter the directory
         # with .tmp.PID files. After success the rename already consumed the
         # temp file, so the unlink is a suppressed no-op.

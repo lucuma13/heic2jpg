@@ -45,7 +45,7 @@ from packaging.version import InvalidVersion, Version
 
 _DAY_SECONDS = 24 * 60 * 60.0
 
-# Caps how much of a PyPI response is read (and decompressed) — a hostile or
+# Caps how much of a PyPI response is read (and decompressed) - a hostile or
 # broken response must not balloon memory inside the host CLI. Must stay above
 # the largest real PyPI JSON payload (a few MiB for huge packages).
 _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -56,7 +56,7 @@ _T = TypeVar("_T")
 def _parse_version(version: str) -> Version | None:
     """Parse *version* per PEP 440, or None if it isn't a valid version.
 
-    None means "cannot compare, stay quiet" — e.g. "unknown" from a dev
+    None means "cannot compare, stay quiet" - e.g. "unknown" from a dev
     install with no package metadata.
     """
     try:
@@ -69,7 +69,7 @@ def _is_newer(latest: str, current: str) -> bool:
     """True if ``latest`` is a strictly higher release than ``current``.
 
     Full PEP 440 comparison. An unparsable version on either
-    side yields False — a wrong hint is worse than no hint.
+    side yields False - a wrong hint is worse than no hint.
     """
     latest_v, current_v = _parse_version(latest), _parse_version(current)
     if latest_v is None or current_v is None:
@@ -80,12 +80,12 @@ def _is_newer(latest: str, current: str) -> bool:
 def _stderr_is_interactive() -> bool:
     """True when stderr is a terminal a human is looking at.
 
-    Module-level so tests (and embedders) can override it — patching
+    Module-level so tests (and embedders) can override it - patching
     ``sys.stderr.isatty`` directly is unreliable under pytest's capture.
     """
     try:
         return sys.stderr.isatty()
-    except Exception:  # noqa: BLE001 — stderr may be closed or replaced; stay quiet
+    except Exception:  # noqa: BLE001 - stderr may be closed or replaced; stay quiet
         return False
 
 
@@ -104,7 +104,7 @@ def _enable_ansi_on_stderr() -> bool:
     if os.name != "nt":
         return True
     try:
-        import ctypes  # noqa: PLC0415 — Windows-only import, skipped entirely on Unix
+        import ctypes  # noqa: PLC0415 - Windows-only import, skipped entirely on Unix
 
         kernel32 = ctypes.windll.kernel32  # windll is Windows-only
         handle = kernel32.GetStdHandle(-12)  # STD_ERROR_HANDLE
@@ -113,7 +113,7 @@ def _enable_ansi_on_stderr() -> bool:
             return False
         kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
         return True
-    except (AttributeError, OSError):  # no console attached, missing DLL, etc. — just skip colour
+    except (AttributeError, OSError):  # no console attached, missing DLL, etc. - just skip colour
         return False
 
 
@@ -130,7 +130,7 @@ def _stderr_supports_color() -> bool:
         return True
     try:
         return sys.stderr.isatty() and _enable_ansi_on_stderr()
-    except Exception:  # noqa: BLE001 — stderr may be closed or replaced; stay monochrome
+    except Exception:  # noqa: BLE001 - stderr may be closed or replaced; stay monochrome
         return False
 
 
@@ -173,11 +173,11 @@ def _detect_upgrade_command(package: str, module_path: Path | None = None, sys_p
 
     Failing that, ``pyvenv.cfg`` tells uv-managed venvs (``uv pip``) apart
     from plain ones (``pip``), and anything unrecognized falls back to
-    ``uv tool upgrade`` — the recommended way to install in the first place.
+    ``uv tool upgrade`` - the recommended way to install in the first place.
     """
     try:
         parts = (module_path or Path(__file__)).resolve().parts
-    except Exception:  # noqa: BLE001 — frozen/odd interpreters; fall through to the pip default
+    except Exception:  # noqa: BLE001 - frozen/odd interpreters; fall through to the pip default
         parts = ()
     if "Cellar" in parts:
         return f"brew upgrade {package}"
@@ -188,7 +188,7 @@ def _detect_upgrade_command(package: str, module_path: Path | None = None, sys_p
         return f"pipx upgrade {package}"
     try:
         cfg = (Path(sys_prefix or sys.prefix) / "pyvenv.cfg").read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001 — no readable pyvenv.cfg means "not a venv at all"
+    except Exception:  # noqa: BLE001 - no readable pyvenv.cfg means "not a venv at all"
         cfg = None
     if cfg is not None:
         if any(line.partition("=")[0].strip() == "uv" for line in cfg.splitlines()):
@@ -243,7 +243,7 @@ class UpdateNotifier:
     def notify(self, timeout: float = 0.25) -> None:
         """Print the upgrade hint to stderr if a newer release is known.
 
-        Waits at most ``timeout`` seconds for an in-flight fetch — long
+        Waits at most ``timeout`` seconds for an in-flight fetch - long
         enough for a warm connection, short enough to be imperceptible.
         A fetch that misses the window still lands in the cache for the
         next run (unless the process exits first, which is also fine).
@@ -263,7 +263,7 @@ class UpdateNotifier:
     def _enabled(self) -> bool:
         env_prefix = re.sub(r"[^A-Z0-9]", "_", self.package.upper())
         opt_outs = (f"{env_prefix}_NO_UPDATE_CHECK", "NO_UPDATE_CHECK", "CI")
-        # Any non-empty value opts out — including "0" and "false" — matching
+        # Any non-empty value opts out - including "0" and "false" - matching
         # how CI-style flags are conventionally treated.
         if any(os.environ.get(var) for var in opt_outs):
             return False
@@ -288,7 +288,7 @@ class UpdateNotifier:
                     "User-Agent": f"{self.package}/{self.current_version} (update-check)",
                 },
             )
-            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 — fixed https URL
+            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - fixed https URL
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
                 if len(raw) > _MAX_RESPONSE_BYTES:
                     return
@@ -297,7 +297,7 @@ class UpdateNotifier:
             info = json.loads(raw)
             self._latest = str(info["info"]["version"])
             self._write_cache(self._latest)
-        except Exception:  # noqa: BLE001, S110 — update hints must never break the host CLI
+        except Exception:  # noqa: BLE001, S110 - update hints must never break the host CLI
             pass
 
     def _read_cache(self) -> str | None:
@@ -306,7 +306,7 @@ class UpdateNotifier:
             raw = json.loads(self._cache_path.read_text(encoding="utf-8"))
             if time.time() - float(raw["checked_at"]) < self.check_interval:
                 return str(raw["latest"])
-        except Exception:  # noqa: BLE001, S110 — a bad cache means "check again", nothing more
+        except Exception:  # noqa: BLE001, S110 - a bad cache means "check again", nothing more
             pass
         return None
 
@@ -319,12 +319,12 @@ class UpdateNotifier:
             tmp.write_text(payload, encoding="utf-8")
             tmp.chmod(0o600)
             tmp.replace(self._cache_path)
-        except Exception:  # noqa: BLE001, S110 — caching is best-effort
+        except Exception:  # noqa: BLE001, S110 - caching is best-effort
             pass
 
 
 def run_with_update_check(package: str, current_version: str, run: Callable[[], _T]) -> _T:
-    """Run a CLI body inside the update check — the one-line entry-point hook.
+    """Run a CLI body inside the update check - the one-line entry-point hook.
 
     ::
 
@@ -333,7 +333,7 @@ def run_with_update_check(package: str, current_version: str, run: Callable[[], 
 
     start() returns instantly (cache read or a daemon-thread fetch that runs
     while ``run`` does the real work); notify() prints the upgrade hint on
-    every exit path — ``run``'s return value, SystemExit, and any other
+    every exit path - ``run``'s return value, SystemExit, and any other
     exception all pass straight through.
     """
     notifier = UpdateNotifier(package, current_version)
@@ -344,11 +344,11 @@ def run_with_update_check(package: str, current_version: str, run: Callable[[], 
         notifier.notify()
 
 
-if __name__ == "__main__":  # pragma: no cover — manual smoke test
-    if len(sys.argv) < 2:  # noqa: PLR2004 — argv position, not magic
+if __name__ == "__main__":  # pragma: no cover - manual smoke test
+    if len(sys.argv) < 2:  # noqa: PLR2004 - argv position, not magic
         sys.exit(f"usage: python {Path(__file__).name} <package> [current_version]")
     _package = sys.argv[1]
-    _current = sys.argv[2] if len(sys.argv) > 2 else "0.0.1"  # noqa: PLR2004 — argv position, not magic
+    _current = sys.argv[2] if len(sys.argv) > 2 else "0.0.1"  # noqa: PLR2004 - argv position, not magic
     _notifier = UpdateNotifier(_package, _current, check_interval=0)
     _notifier.start()
     _notifier.notify(timeout=10)

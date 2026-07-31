@@ -5,15 +5,15 @@ Create a Homebrew formula for this package from pyproject.toml and uv.lock.
 Package-agnostic: reads project metadata and the locked runtime dependency
 closure from the current package, so this script can be ported into any
 uv-managed Python repo. Each runtime dependency is either vendored as a
-`resource` block built from its sdist, or — if a same-named Homebrew-core
-formula exists AND is verified safe — turned into a plain `depends_on`
+`resource` block built from its sdist, or - if a same-named Homebrew-core
+formula exists AND is verified safe - turned into a plain `depends_on`
 instead.
 
 "Safe" is checked against the formula's actual source, not just its
 existence: Homebrew's `virtualenv_create` only auto-wires a dependency's
 modules into the venv (via a generated .pth file) when that dependency's own
 formula installs straight into its `opt_prefix`'s top-level
-`lib/pythonX.Y/site-packages` — the pattern homebrew-core's `pillow` formula
+`lib/pythonX.Y/site-packages` - the pattern homebrew-core's `pillow` formula
 uses, calling `pip install --prefix=...` itself rather than building an
 isolated venv. A same-named formula that instead uses
 `virtualenv_install_with_resources` (e.g. homebrew-core's `pygments`) builds
@@ -26,9 +26,9 @@ runtime import, so `homebrew_provides_module()` fetches the formula's .rb
 source from GitHub and only signs off when it depends on a Homebrew `python@`
 formula and does NOT include `Language::Python::Virtualenv`.
 
-Per-repo extras — system libraries a dependency needs at build time (e.g.
+Per-repo extras - system libraries a dependency needs at build time (e.g.
 `libheif:build`) or external CLI tools the package shells out to at runtime
-— are declared in pyproject.toml as:
+- are declared in pyproject.toml as:
 
     [tool.<project-name>]
     homebrew.dependencies = [ "ffmpeg" ]
