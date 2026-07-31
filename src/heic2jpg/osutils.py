@@ -16,7 +16,7 @@ def _set_creation_time_windows(path: Path, ctime_ns: int) -> None:
     Set a file's creation time on Windows via kernel32.SetFileTime.
 
     Uses ctypes so pywin32 is not required. Silently does nothing on non-Windows
-    platforms — callers don't need to guard with sys.platform.
+    platforms - callers don't need to guard with sys.platform.
 
     Parameters:
     path     : file to update (must already exist) ctime_ns : desired creation
@@ -87,7 +87,7 @@ def _set_creation_time_windows(path: Path, ctime_ns: int) -> None:
         raise OSError(ctypes.get_last_error(), f"CreateFileW failed on {path}")
     try:
         # SetFileTime(handle, lpCreationTime, lpLastAccessTime, lpLastWriteTime)
-        # Passing NULL for the last two leaves atime/mtime untouched —
+        # Passing NULL for the last two leaves atime/mtime untouched -
         # os.utime() already set those.
         ok = kernel32.SetFileTime(handle, ctypes.byref(ft), None, None)
         if not ok:
@@ -107,19 +107,22 @@ def _restore_timestamps(out: Path, src_stat: os.stat_result) -> None:
 
     os.utime takes (atime_ns, mtime_ns) in nanoseconds.
 
-    Creation time (st_birthtime) is read-only on most Linux filesystems — no
+    Creation time (st_birthtime) is read-only on most Linux filesystems - no
     portable syscall exists to set it. As a workaround we write birthtime into
-    mtime when available (macOS/APFS populates st_birthtime; on Linux it's
-    absent and we fall back to mtime). The real mtime of a HEIC is almost always
-    identical to birthtime anyway (the file is written once, never modified), so
-    this faithfully represents "when the photo was taken" in the output's mtime
-    field — the one timestamp every tool shows.
+    mtime when available on macOS/APFS, where it reliably reflects "when the
+    photo was taken" (the file is written once, never modified). Windows also
+    exposes st_birthtime (since Python 3.12), but there it means something
+    different: whenever the file was copied onto the machine, while st_mtime is
+    the capture date. So birthtime is only trusted on macOS; every other
+    platform falls back to mtime.
 
     Raises OSError on failure (caller catches and warns).
     """
-    birthtime_ns = getattr(src_stat, "st_birthtime_ns", None)
-    if birthtime_ns is None and hasattr(src_stat, "st_birthtime"):
-        birthtime_ns = int(src_stat.st_birthtime * 1e9)
+    birthtime_ns = None
+    if sys.platform == "darwin":
+        birthtime_ns = getattr(src_stat, "st_birthtime_ns", None)
+        if birthtime_ns is None and hasattr(src_stat, "st_birthtime"):
+            birthtime_ns = int(src_stat.st_birthtime * 1e9)
     mtime_ns = birthtime_ns if birthtime_ns is not None else src_stat.st_mtime_ns
     os.utime(out, ns=(src_stat.st_atime_ns, mtime_ns))
 

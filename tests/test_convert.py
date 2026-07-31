@@ -264,7 +264,7 @@ class TestConvertOne:
 
     def test_times_stat_oserror_skips_timestamps(self, single_heic, mocker):
         """If stat() raises on the source, src_stat stays None and timestamps
-        are silently skipped — conversion still succeeds."""
+        are silently skipped - conversion still succeeds."""
         mocker.patch("heic2jpg.osutils.os.utime")
         real_stat = Path.stat
 
@@ -279,7 +279,7 @@ class TestConvertOne:
         assert res.warnings == []
 
     def test_times_birthtime_float_fallback(self, single_heic, mocker):
-        """Hits the st_birthtime float→ns branch."""
+        """Hits the st_birthtime float→ns branch (macOS-only)."""
         mock_stat = MagicMock()
         mock_stat.st_birthtime_ns = None
         mock_stat.st_birthtime = 1_700_000_000.5
@@ -293,6 +293,7 @@ class TestConvertOne:
                 return mock_stat
             return real_stat(self_, *a, **kw)
 
+        mocker.patch("heic2jpg.osutils.sys.platform", "darwin")
         mock_utime = mocker.patch("heic2jpg.osutils.os.utime")
         mocker.patch("heic2jpg.convert.Path.stat", selective_stat)
         res = self._call(single_heic, times=True)
@@ -327,9 +328,40 @@ class TestConvertOne:
 
         assert res.status is convert.Status.OK
         mock_utime.assert_called_once()
+
+    def test_times_windows_birthtime_ignored_uses_mtime(self, single_heic, mocker):
+        """
+        Windows also populates st_birthtime (since Python 3.12), but there it
+        means "when this file was copied onto this machine" rather than "when
+        the photo was taken" - unlike macOS/APFS. mtime must win even though
+        birthtime is present.
+        """
+        mock_stat = MagicMock()
+        mock_stat.st_birthtime_ns = 1_700_000_000_000_000_000  # would be wrong if used
+        mock_stat.st_birthtime = 1_700_000_000.0
+        mock_stat.st_atime_ns = 1_600_000_000_000_000_000
+        mock_stat.st_mtime_ns = 1_600_000_000_000_000_000
+
+        real_stat = Path.stat
+
+        def selective_stat(self_, *a, **kw):
+            if self_ == single_heic:
+                return mock_stat
+            return real_stat(self_, *a, **kw)
+
+        mocker.patch("heic2jpg.osutils.sys.platform", "win32")
+        # Faking win32 also un-guards the kernel32 helper, which would blow up on
+        # ctypes.WinDLL off Windows. It is covered on its own in test_osutils.
+        mocker.patch("heic2jpg.osutils._set_creation_time_windows")
+        mock_utime = mocker.patch("heic2jpg.osutils.os.utime")
+        mocker.patch("heic2jpg.convert.Path.stat", selective_stat)
+        res = self._call(single_heic, times=True)
+
+        assert res.status is convert.Status.OK
+        mock_utime.assert_called_once()
         call_args = mock_utime.call_args
         ns_pair = call_args.kwargs.get("ns") or call_args[1].get("ns") or call_args[0][1]
-        assert ns_pair[1] == 2_000_000_000_000_000_000  # fell back to mtime_ns
+        assert ns_pair[1] == 1_600_000_000_000_000_000
 
     def test_tmp_unlink_oserror_suppressed(self, single_heic, mocker):
         """OSError during tmp.unlink() in the except block is suppressed.
@@ -413,7 +445,7 @@ class TestFuzzCorruptPayloads:
     return a well-formed Result.
 
     Corrupt bytes can produce a header declaring a huge pixel count, which trips
-    Pillow's DecompressionBombWarning — expected noise here, so it's filtered.
+    Pillow's DecompressionBombWarning - expected noise here, so it's filtered.
     """
 
     @given(payload=strategies.binary(min_size=0, max_size=4096))
@@ -481,7 +513,7 @@ class TestFuzzBitFlips:
     convert_with_pillow propagating all the way up).
 
     A flipped dimension byte can inflate the declared pixel count, tripping
-    Pillow's DecompressionBombWarning — expected noise here, so it's filtered.
+    Pillow's DecompressionBombWarning - expected noise here, so it's filtered.
     """
 
     @given(
