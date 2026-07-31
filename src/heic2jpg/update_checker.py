@@ -22,11 +22,16 @@ Features:
     response size (raw and decompressed) against hostile/broken servers
   - hints only appear on interactive runs (stderr is a tty)
   - colour follows the NO_COLOR / FORCE_COLOR conventions (no-color.org)
+  - stdout/stderr are forced to UTF-8 on Windows, so non-ASCII paths survive
+    redirection to a file, a pipe, or a CI log
   - opt out with <PACKAGE>_NO_UPDATE_CHECK=1, NO_UPDATE_CHECK=1, or in CI
 
+Self-contained by design: stdlib only (plus ``packaging``), no imports from the
+host package, so the file can be dropped into any project as-is.
 """
 # Copyright (c) 2026 Luis Gómez Gutiérrez. License: MIT.
 
+import contextlib
 import itertools
 import json
 import os
@@ -87,6 +92,23 @@ def _stderr_is_interactive() -> bool:
         return sys.stderr.isatty()
     except Exception:  # noqa: BLE001 - stderr may be closed or replaced; stay quiet
         return False
+
+
+def _ensure_utf8_stdio() -> None:
+    """Force stdout/stderr to UTF-8 on Windows; a no-op everywhere else.
+
+    Python only writes Unicode straight to the console (PEP 528) when the
+    stream is a live, attached console. The moment it is redirected to a file,
+    piped, or captured by a CI runner it falls back to the legacy ANSI code
+    page, which cannot encode emoji or non-ASCII filenames.
+    """
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(ValueError, OSError):  # detached / replaced stream - leave it alone
+                reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 ORANGE = "\033[38;5;208m"
@@ -336,6 +358,7 @@ def run_with_update_check(package: str, current_version: str, run: Callable[[], 
     every exit path - ``run``'s return value, SystemExit, and any other
     exception all pass straight through.
     """
+    _ensure_utf8_stdio()
     notifier = UpdateNotifier(package, current_version)
     notifier.start()
     try:

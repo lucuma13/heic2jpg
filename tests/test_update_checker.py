@@ -475,6 +475,81 @@ def test_stderr_supports_color_false_when_isatty_raises(monkeypatch):
 
 
 # ===========================================================================
+# UTF-8 stdio on Windows
+# ===========================================================================
+
+
+class _RecordingStream:
+    """A stream that records how reconfigure() was called."""
+
+    def __init__(self):
+        self.calls = []
+
+    def reconfigure(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class _NoReconfigureStream:
+    """A stream predating reconfigure() - or one replaced by a test double."""
+
+
+class _BoomReconfigureStream(_RecordingStream):
+    """A detached stream: reconfigure() raises rather than returning."""
+
+    def reconfigure(self, **kwargs):
+        super().reconfigure(**kwargs)
+        raise ValueError("underlying buffer has been detached")
+
+
+def test_ensure_utf8_stdio_is_a_noop_off_windows(monkeypatch):
+    """On Unix the streams are already UTF-8 - leave them untouched."""
+    out, err = _RecordingStream(), _RecordingStream()
+    monkeypatch.setattr(update_checker.os, "name", "posix")
+    monkeypatch.setattr(update_checker.sys, "stdout", out)
+    monkeypatch.setattr(update_checker.sys, "stderr", err)
+
+    update_checker._ensure_utf8_stdio()
+    assert out.calls == []
+    assert err.calls == []
+
+
+def test_ensure_utf8_stdio_reconfigures_both_streams_on_windows(monkeypatch):
+    """Both stdout and stderr are forced to UTF-8, never failing on an
+    unencodable character - this is what keeps non-ASCII paths readable once
+    the output is redirected to a file, a pipe, or a CI log."""
+    out, err = _RecordingStream(), _RecordingStream()
+    monkeypatch.setattr(update_checker.os, "name", "nt")
+    monkeypatch.setattr(update_checker.sys, "stdout", out)
+    monkeypatch.setattr(update_checker.sys, "stderr", err)
+
+    update_checker._ensure_utf8_stdio()
+    expected = [{"encoding": "utf-8", "errors": "backslashreplace"}]
+    assert out.calls == expected
+    assert err.calls == expected
+
+
+def test_ensure_utf8_stdio_survives_streams_without_reconfigure(monkeypatch):
+    """A stream lacking reconfigure() is skipped, not crashed on."""
+    monkeypatch.setattr(update_checker.os, "name", "nt")
+    monkeypatch.setattr(update_checker.sys, "stdout", _NoReconfigureStream())
+    monkeypatch.setattr(update_checker.sys, "stderr", _NoReconfigureStream())
+
+    update_checker._ensure_utf8_stdio()  # must not raise
+
+
+def test_ensure_utf8_stdio_survives_a_raising_reconfigure(monkeypatch):
+    """A detached/closed stream must not break the host CLI, and a failure on
+    stdout must not stop stderr from being reconfigured."""
+    out, err = _BoomReconfigureStream(), _RecordingStream()
+    monkeypatch.setattr(update_checker.os, "name", "nt")
+    monkeypatch.setattr(update_checker.sys, "stdout", out)
+    monkeypatch.setattr(update_checker.sys, "stderr", err)
+
+    update_checker._ensure_utf8_stdio()  # must not raise
+    assert err.calls == [{"encoding": "utf-8", "errors": "backslashreplace"}]
+
+
+# ===========================================================================
 # CLI wiring - run_with_update_check and the console-script entry points
 # ===========================================================================
 
@@ -503,6 +578,19 @@ def test_run_with_update_check_wraps_the_body(notifier_events):
     result = run_with_update_check(PACKAGE, "1.0", lambda: notifier_events.append("run") or 42)
     assert result == 42
     assert notifier_events == [f"init {PACKAGE} 1.0", "start", "run", "notify"]
+
+
+def test_run_with_update_check_fixes_stdio_before_running_the_body(notifier_events, monkeypatch):
+    """UTF-8 stdio is established before the body runs, so the body's own
+    output benefits - not just the update hint printed afterwards."""
+    monkeypatch.setattr(
+        update_checker,
+        "_ensure_utf8_stdio",
+        lambda: notifier_events.append("utf8"),
+    )
+
+    run_with_update_check(PACKAGE, "1.0", lambda: notifier_events.append("run"))
+    assert notifier_events == ["utf8", f"init {PACKAGE} 1.0", "start", "run", "notify"]
 
 
 def test_run_with_update_check_notifies_on_every_exit_path(notifier_events):
